@@ -1,5 +1,5 @@
-// CoachIQ Backend Server - IMPROVED VERSION
-// Better prompts, more detailed analysis, comprehensive reports
+// CoachIQ Backend Server - STABLE VERSION
+// Better error handling, lower memory usage
 
 const express = require('express');
 const cors = require('cors');
@@ -19,12 +19,12 @@ const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Store reports in memory (use database in production)
+// Store reports in memory
 const reports = new Map();
 
-// Health check endpoint
+// Health check endpoints
 app.get('/', (req, res) => {
-    res.json({ status: 'CoachIQ API is running', version: '2.0.0' });
+    res.json({ status: 'CoachIQ API is running', version: '2.1.0-stable' });
 });
 
 app.get('/health', (req, res) => {
@@ -35,7 +35,7 @@ app.get('/health', (req, res) => {
 app.post('/api/analyze', async (req, res) => {
     const { videoUrl, opponentName, analysisOptions } = req.body;
 
-    console.log('📥 Received analysis request:', { videoUrl, opponentName, analysisOptions });
+    console.log('📥 Received analysis request:', { videoUrl, opponentName });
 
     if (!videoUrl || !opponentName) {
         return res.status(400).json({ error: 'Missing videoUrl or opponentName' });
@@ -43,32 +43,23 @@ app.post('/api/analyze', async (req, res) => {
 
     const reportId = uuidv4();
     
-    // Store initial report status
     reports.set(reportId, {
         id: reportId,
         status: 'processing',
         opponentName,
         videoUrl,
         progress: 0,
+        progressText: 'Starting...',
         createdAt: new Date().toISOString()
     });
 
-    // Start async processing
-    processVideo(reportId, videoUrl, opponentName, analysisOptions || ['defense', 'offense', 'pace'])
-        .catch(err => {
-            console.error('❌ Processing error:', err);
-            reports.set(reportId, {
-                ...reports.get(reportId),
-                status: 'failed',
-                error: err.message
-            });
-        });
+    // Start async processing - wrapped in try/catch
+    processVideo(reportId, videoUrl, opponentName, analysisOptions || ['defense', 'offense', 'pace']);
 
-    // Return immediately with report ID
     res.json({ 
         reportId, 
         status: 'processing',
-        message: 'Analysis started. Poll /api/reports/:id for status.'
+        message: 'Analysis started.'
     });
 });
 
@@ -83,48 +74,47 @@ app.get('/api/reports/:id', (req, res) => {
     res.json(report);
 });
 
-// Process video and analyze with Claude
+// Main processing function with full error handling
 async function processVideo(reportId, videoUrl, opponentName, analysisOptions) {
     const tempDir = `/tmp/coachiq_${reportId}`;
     
     try {
+        console.log('🏀 Starting analysis for report:', reportId);
+        
         // Create temp directory
         if (!fs.existsSync(tempDir)) {
             fs.mkdirSync(tempDir, { recursive: true });
         }
 
+        // Step 1: Download video
         updateReport(reportId, { progress: 5, progressText: 'Downloading video...' });
         console.log('📥 Downloading video...');
-
-        // Download video from YouTube
+        
         const videoPath = path.join(tempDir, 'video.mp4');
         await downloadYouTubeVideo(videoUrl, videoPath);
+        console.log('✅ Video downloaded');
         
-        updateReport(reportId, { progress: 20, progressText: 'Extracting frames...' });
+        // Step 2: Extract frames - REDUCED for stability
+        updateReport(reportId, { progress: 25, progressText: 'Extracting frames...' });
         console.log('🎞️ Extracting frames...');
-
-        // Extract MORE frames for better analysis
-        const frames = await extractFrames(videoPath, tempDir, {
-            intervalSeconds: 5,  // Every 5 seconds instead of 10
-            maxFrames: 30        // 30 frames instead of 20
-        });
         
+        const frames = await extractFrames(videoPath, tempDir);
         console.log(`✅ Extracted ${frames.length} frames`);
-        updateReport(reportId, { progress: 35, progressText: `Analyzing ${frames.length} frames with AI...` });
-
-        // Analyze frames with Claude - IMPROVED PROMPTS
-        const analysis = await analyzeWithClaude(frames, opponentName, analysisOptions);
         
-        console.log('📊 Raw analysis results:', JSON.stringify(analysis, null, 2));
-        updateReport(reportId, { progress: 75, progressText: 'Generating detailed report...' });
-
-        // Generate comprehensive report
-        const report = await generateDetailedReport(analysis, opponentName, frames.length);
+        // Step 3: Analyze with Claude
+        updateReport(reportId, { progress: 40, progressText: 'AI analyzing video...' });
+        console.log('🤖 Sending to Claude...');
         
-        console.log('📋 Final report generated');
-        updateReport(reportId, { progress: 90, progressText: 'Finalizing...' });
-
-        // Update with final results
+        const analysis = await analyzeWithClaude(frames, opponentName);
+        console.log('✅ Claude analysis complete');
+        
+        // Step 4: Generate report
+        updateReport(reportId, { progress: 80, progressText: 'Generating report...' });
+        console.log('📋 Generating report...');
+        
+        const report = generateReport(analysis, opponentName, frames.length);
+        
+        // Step 5: Save final report
         reports.set(reportId, {
             ...reports.get(reportId),
             status: 'complete',
@@ -136,26 +126,39 @@ async function processVideo(reportId, videoUrl, opponentName, analysisOptions) {
 
         console.log('✅ Analysis complete for report:', reportId);
 
-        // Cleanup temp files
-        cleanup(tempDir);
-
     } catch (error) {
-        console.error('❌ Process error:', error);
+        console.error('❌ Processing error:', error.message);
+        console.error(error.stack);
+        
+        reports.set(reportId, {
+            ...reports.get(reportId),
+            status: 'failed',
+            error: error.message,
+            progress: 0,
+            progressText: 'Failed: ' + error.message
+        });
+    } finally {
+        // Always cleanup
         cleanup(tempDir);
-        throw error;
     }
 }
 
 function updateReport(reportId, updates) {
     const current = reports.get(reportId);
-    reports.set(reportId, { ...current, ...updates });
+    if (current) {
+        reports.set(reportId, { ...current, ...updates });
+    }
 }
 
-// Download YouTube video
+// Download YouTube video - with timeout and error handling
 async function downloadYouTubeVideo(url, outputPath) {
     return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error('Download timeout after 3 minutes'));
+        }, 3 * 60 * 1000);
+
         try {
-            console.log('🔗 Starting YouTube download:', url);
+            console.log('🔗 Fetching video info...');
             
             const video = ytdl(url, { 
                 quality: 'lowest',
@@ -163,303 +166,169 @@ async function downloadYouTubeVideo(url, outputPath) {
             });
             
             const writeStream = fs.createWriteStream(outputPath);
-            video.pipe(writeStream);
             
             video.on('info', (info) => {
-                console.log('📹 Video info:', info.videoDetails.title, '- Duration:', info.videoDetails.lengthSeconds, 'seconds');
+                console.log('📹 Video:', info.videoDetails.title);
+                console.log('⏱️ Duration:', info.videoDetails.lengthSeconds, 'seconds');
             });
-            
+
+            video.on('error', (err) => {
+                clearTimeout(timeout);
+                console.error('❌ Video stream error:', err.message);
+                reject(err);
+            });
+
+            writeStream.on('error', (err) => {
+                clearTimeout(timeout);
+                console.error('❌ Write stream error:', err.message);
+                reject(err);
+            });
+
             writeStream.on('finish', () => {
-                console.log('✅ Video downloaded successfully');
+                clearTimeout(timeout);
+                console.log('✅ Download complete');
                 resolve(outputPath);
             });
-            
-            writeStream.on('error', (err) => {
-                console.error('❌ Write error:', err);
-                reject(err);
-            });
-            
-            video.on('error', (err) => {
-                console.error('❌ Download error:', err);
-                reject(err);
-            });
-            
-            // Timeout after 5 minutes
-            setTimeout(() => {
-                reject(new Error('Download timeout - video too long or slow connection'));
-            }, 5 * 60 * 1000);
+
+            video.pipe(writeStream);
             
         } catch (error) {
-            console.error('❌ YouTube download failed:', error);
+            clearTimeout(timeout);
             reject(error);
         }
     });
 }
 
-// Extract frames from video - IMPROVED
-async function extractFrames(videoPath, outputDir, options = {}) {
-    const { intervalSeconds = 5, maxFrames = 30 } = options;
-    
+// Extract frames - OPTIMIZED for low memory
+async function extractFrames(videoPath, outputDir) {
     return new Promise((resolve, reject) => {
         const frames = [];
         const framesDir = path.join(outputDir, 'frames');
         
-        if (!fs.existsSync(framesDir)) {
-            fs.mkdirSync(framesDir, { recursive: true });
-        }
+        try {
+            if (!fs.existsSync(framesDir)) {
+                fs.mkdirSync(framesDir, { recursive: true });
+            }
 
-        ffmpeg(videoPath)
-            .outputOptions([
-                '-vf', `fps=1/${intervalSeconds}`,
-                '-frames:v', maxFrames.toString(),
-                '-q:v', '3'  // Higher quality
-            ])
-            .output(path.join(framesDir, 'frame_%03d.jpg'))
-            .on('end', () => {
-                // Read all frames as base64
-                const files = fs.readdirSync(framesDir)
-                    .filter(f => f.endsWith('.jpg'))
-                    .sort();
+            // Extract only 12 frames, every 8 seconds - much lighter on memory
+            ffmpeg(videoPath)
+                .outputOptions([
+                    '-vf', 'fps=1/8,scale=640:-1',  // 1 frame per 8 sec, scaled down
+                    '-frames:v', '12',              // Max 12 frames
+                    '-q:v', '5'                     // Lower quality = smaller files
+                ])
+                .output(path.join(framesDir, 'frame_%03d.jpg'))
+                .on('start', (cmd) => {
+                    console.log('🎬 FFmpeg started');
+                })
+                .on('end', () => {
+                    console.log('🎬 FFmpeg finished');
+                    
+                    try {
+                        const files = fs.readdirSync(framesDir)
+                            .filter(f => f.endsWith('.jpg'))
+                            .sort();
+                        
+                        console.log(`📁 Found ${files.length} frame files`);
+                        
+                        for (const file of files) {
+                            const filePath = path.join(framesDir, file);
+                            const data = fs.readFileSync(filePath);
+                            frames.push({
+                                filename: file,
+                                base64: data.toString('base64')
+                            });
+                            // Delete file immediately to save memory
+                            fs.unlinkSync(filePath);
+                        }
+                        
+                        resolve(frames);
+                    } catch (readError) {
+                        reject(readError);
+                    }
+                })
+                .on('error', (err) => {
+                    console.error('❌ FFmpeg error:', err.message);
+                    reject(err);
+                })
+                .run();
                 
-                for (const file of files) {
-                    const filePath = path.join(framesDir, file);
-                    const data = fs.readFileSync(filePath);
-                    const frameNum = parseInt(file.match(/\d+/)[0]);
-                    frames.push({
-                        filename: file,
-                        base64: data.toString('base64'),
-                        timestamp: (frameNum - 1) * intervalSeconds
-                    });
-                }
-                
-                console.log(`✅ Extracted ${frames.length} frames`);
-                resolve(frames);
-            })
-            .on('error', (err) => {
-                console.error('❌ FFmpeg error:', err);
-                reject(err);
-            })
-            .run();
+        } catch (error) {
+            reject(error);
+        }
     });
 }
 
-// IMPROVED Claude Analysis with Better Prompts
-async function analyzeWithClaude(frames, opponentName, analysisOptions) {
+// Analyze with Claude - simplified and more robust
+async function analyzeWithClaude(frames, opponentName) {
     if (frames.length === 0) {
-        throw new Error('No frames extracted from video');
+        throw new Error('No frames to analyze');
     }
 
-    console.log(`🤖 Analyzing ${frames.length} frames with Claude...`);
-
-    // Analyze frames in batches of 4 for better context
-    const batchSize = 4;
-    const allResults = [];
-
-    for (let i = 0; i < frames.length; i += batchSize) {
-        const batch = frames.slice(i, i + batchSize);
-        const batchNum = Math.floor(i / batchSize) + 1;
-        const totalBatches = Math.ceil(frames.length / batchSize);
-        
-        console.log(`📊 Processing batch ${batchNum}/${totalBatches}...`);
-        
-        const imageContent = batch.map(frame => ({
-            type: 'image',
-            source: {
-                type: 'base64',
-                media_type: 'image/jpeg',
-                data: frame.base64
-            }
-        }));
-
-        // IMPROVED PROMPT - Much more detailed
-        const prompt = `You are an elite basketball scout with 20+ years of experience analyzing game film for NBA and NCAA teams. You're analyzing game film of "${opponentName}".
-
-ANALYZE THESE ${batch.length} CONSECUTIVE FRAMES CAREFULLY.
-
-For EACH frame, identify ALL of the following:
-
-## DEFENSIVE ANALYSIS
-- **Defensive Scheme**: man-to-man, 2-3 zone, 3-2 zone, 1-3-1 zone, 1-2-2 zone, match-up zone, full-court press, half-court trap, or hybrid
-- **Defensive Positioning**: Are defenders in good position? Gaps in the defense?
-- **Help Defense**: Is help defense present? Are rotations happening?
-- **On-Ball Defense**: How tight is the on-ball defender? Pressuring or sagging?
-
-## OFFENSIVE ANALYSIS  
-- **Offensive Set/Play**: Identify the specific play (horns, flex, motion, princeton, pick-and-roll, pick-and-pop, dribble-drive, isolation, post-up, fast break, secondary break, BLOB, SLOB, etc.)
-- **Ball Movement**: Is the ball moving? How many passes? Ball reversal?
-- **Player Movement**: Cuts, screens, off-ball movement quality
-- **Spacing**: Good floor spacing or clustered?
-
-## PLAYER IDENTIFICATION
-- **Ball Handler**: Jersey number if visible, or position estimate
-- **Key Players**: Any players who stand out (best defender, primary scorer, playmaker)
-- **Mismatches**: Any obvious mismatches being exploited?
-
-## GAME CONTEXT
-- **Court Location**: Which side of court, half-court vs transition
-- **Game Situation**: Early offense, late clock, transition, after timeout, etc.
-- **Tempo**: Fast-paced or slow/methodical?
-
-Respond with ONLY valid JSON in this exact format:
-{
-  "frames": [
-    {
-      "frameNumber": 1,
-      "timestamp": "${batch[0]?.timestamp || 0}s",
-      "defense": {
-        "scheme": "man-to-man",
-        "quality": "good/average/poor",
-        "notes": "specific observations"
-      },
-      "offense": {
-        "play": "pick and roll",
-        "execution": "good/average/poor",
-        "spacing": "good/poor",
-        "ballMovement": "active/stagnant"
-      },
-      "players": {
-        "ballHandler": "#23 or PG",
-        "keyPlayer": "description if notable",
-        "mismatch": "description if present"
-      },
-      "situation": {
-        "context": "half-court/transition/BLOB/etc",
-        "tempo": "fast/medium/slow",
-        "clockSituation": "early/late/shot clock running down"
-      },
-      "scoutingNotes": "Any specific tactical observations a coach would want to know"
-    }
-  ],
-  "batchSummary": "Overall observations from these frames"
-}`;
-
-        try {
-            const response = await anthropic.messages.create({
-                model: 'claude-sonnet-4-20250514',
-                max_tokens: 4096,
-                messages: [{
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: prompt },
-                        ...imageContent
-                    ]
-                }]
-            });
-
-            console.log('✅ Claude response received for batch', batchNum);
-
-            // Parse Claude's response
-            const text = response.content[0].text;
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            
-            if (jsonMatch) {
-                try {
-                    const parsed = JSON.parse(jsonMatch[0]);
-                    if (parsed.frames) {
-                        allResults.push(...parsed.frames);
-                    }
-                    if (parsed.batchSummary) {
-                        allResults.push({ batchSummary: parsed.batchSummary });
-                    }
-                } catch (parseErr) {
-                    console.warn('⚠️ JSON parse error:', parseErr.message);
-                }
-            }
-            
-            // Delay between batches to avoid rate limits
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-        } catch (error) {
-            console.error('❌ Claude API error for batch', batchNum, ':', error.message);
-            // Continue with other batches
-        }
-    }
-
-    console.log(`✅ Completed analysis of all frames. Got ${allResults.length} results.`);
-    return allResults;
-}
-
-// IMPROVED Report Generation
-async function generateDetailedReport(frameAnalysis, opponentName, totalFrames) {
-    // Aggregate all the data
-    const stats = aggregateDetailedStats(frameAnalysis);
+    console.log(`🤖 Analyzing ${frames.length} frames...`);
     
-    console.log('📊 Aggregated stats:', JSON.stringify(stats, null, 2));
+    // Send all frames in ONE request to minimize API calls
+    const imageContent = frames.map(frame => ({
+        type: 'image',
+        source: {
+            type: 'base64',
+            media_type: 'image/jpeg',
+            data: frame.base64
+        }
+    }));
 
-    // Use Claude to generate narrative insights
-    const insightPrompt = `You are a professional basketball scout preparing a scouting report for a coaching staff.
+    const prompt = `You are an expert basketball scout analyzing game film of "${opponentName}".
 
-Based on this analysis data from ${totalFrames} frames of game film for "${opponentName}", generate a comprehensive scouting report.
+Analyze these ${frames.length} frames from a basketball game and provide a comprehensive scouting report.
 
-ANALYSIS DATA:
-${JSON.stringify(stats, null, 2)}
+For the overall video, identify:
 
-Create a detailed JSON scouting report with actionable insights:
+1. **DEFENSIVE SCHEMES**: What defense do they primarily run? (man-to-man, 2-3 zone, 3-2 zone, 1-3-1, press, etc.)
+
+2. **OFFENSIVE PLAYS**: What offensive sets/plays do you see? (pick and roll, motion, horns, flex, isolation, fast break, etc.)
+
+3. **KEY PLAYERS**: Any players who stand out? (jersey numbers if visible, positions, roles)
+
+4. **PACE/TEMPO**: Do they play fast or slow? Push transition or set up half-court?
+
+5. **STRENGTHS**: What do they do well?
+
+6. **WEAKNESSES**: What can be exploited?
+
+Respond with this JSON format:
 {
-  "executiveSummary": "2-3 sentence overview of this team's style and tendencies",
-  
-  "offensiveAnalysis": {
-    "primaryStyle": "Their main offensive approach",
+  "defense": {
+    "primary": "main defensive scheme",
+    "secondary": "backup scheme if any",
+    "breakdown": [
+      {"name": "scheme name", "percentage": 60},
+      {"name": "other scheme", "percentage": 40}
+    ],
+    "notes": "defensive tendencies and observations"
+  },
+  "offense": {
+    "primaryStyle": "main offensive approach",
     "topPlays": [
-      {"name": "play name", "frequency": "percentage", "effectiveness": "high/medium/low", "howToDefend": "specific defensive strategy"}
+      {"name": "play name", "percentage": 30, "notes": "how they run it"},
+      {"name": "another play", "percentage": 25, "notes": "details"}
     ],
-    "ballMovement": {
-      "rating": "excellent/good/average/poor",
-      "description": "how they move the ball"
-    },
-    "spacing": {
-      "rating": "excellent/good/average/poor",  
-      "description": "their floor spacing tendencies"
-    },
-    "tempo": {
-      "rating": 1-100,
-      "description": "pace description"
-    },
-    "weaknesses": ["list of offensive weaknesses to exploit"]
+    "ballMovement": "good/average/poor",
+    "spacing": "good/average/poor"
   },
-  
-  "defensiveAnalysis": {
-    "primaryScheme": "main defensive set",
-    "secondaryScheme": "backup defense if any",
-    "schemeBreakdown": [
-      {"scheme": "name", "percentage": "how often used"}
-    ],
-    "strengths": ["defensive strengths"],
-    "weaknesses": ["defensive weaknesses to attack"],
-    "tendencies": ["specific defensive tendencies"]
-  },
-  
   "keyPlayers": [
-    {
-      "identifier": "jersey number or position",
-      "role": "their role on the team",
-      "strengths": "what they do well",
-      "weaknesses": "how to defend/attack them",
-      "usageRate": "high/medium/low"
-    }
+    {"name": "#23 or PG", "role": "primary ball handler", "percentage": 40, "notes": "tendencies"}
   ],
-  
-  "gameplan": {
-    "offensiveKeys": [
-      "Specific action item 1",
-      "Specific action item 2",
-      "Specific action item 3"
-    ],
-    "defensiveKeys": [
-      "Specific action item 1", 
-      "Specific action item 2",
-      "Specific action item 3"
-    ],
-    "mustWinBattles": ["Key matchups or areas to dominate"]
+  "pace": {
+    "rating": 65,
+    "description": "description of their tempo"
   },
-  
-  "practiceEmphasis": [
-    {
-      "drill": "drill name or focus",
-      "purpose": "why this is important against this opponent",
-      "duration": "suggested time"
-    }
-  ]
+  "strengths": ["strength 1", "strength 2"],
+  "weaknesses": ["weakness 1", "weakness 2"],
+  "recommendations": {
+    "offensiveKeys": ["how to attack them", "specific strategies"],
+    "defensiveKeys": ["how to defend them", "specific strategies"],
+    "practiceEmphasis": ["what to work on in practice"]
+  }
 }`;
 
     try {
@@ -468,183 +337,81 @@ Create a detailed JSON scouting report with actionable insights:
             max_tokens: 4096,
             messages: [{
                 role: 'user',
-                content: insightPrompt
+                content: [
+                    { type: 'text', text: prompt },
+                    ...imageContent
+                ]
             }]
         });
+
+        console.log('✅ Received Claude response');
 
         const text = response.content[0].text;
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         
         if (jsonMatch) {
-            const report = JSON.parse(jsonMatch[0]);
-            
-            // Add metadata
-            report.opponent = opponentName;
-            report.generatedAt = new Date().toISOString();
-            report.framesAnalyzed = totalFrames;
-            report.confidence = Math.min(95, 60 + totalFrames * 1.5);
-            report.rawStats = stats;
-            
-            // Ensure required fields exist with proper structure for frontend
-            report.defense = {
-                primary: report.defensiveAnalysis?.primaryScheme || stats.topDefense || 'Unknown',
-                secondary: report.defensiveAnalysis?.secondaryScheme || null,
-                breakdown: report.defensiveAnalysis?.schemeBreakdown?.map(s => ({
-                    name: s.scheme,
-                    percentage: parseInt(s.percentage) || 0
-                })) || stats.defenseBreakdown || []
-            };
-            
-            report.offense = {
-                topPlays: report.offensiveAnalysis?.topPlays?.map(p => ({
-                    name: p.name,
-                    percentage: parseInt(p.frequency) || 0,
-                    notes: p.howToDefend
-                })) || stats.offenseBreakdown || [],
-                primaryStyle: report.offensiveAnalysis?.primaryStyle || 'Unknown'
-            };
-            
-            report.pace = {
-                rating: report.offensiveAnalysis?.tempo?.rating || stats.paceRating || 50,
-                description: report.offensiveAnalysis?.tempo?.description || 'Moderate tempo'
-            };
-            
-            report.recommendations = {
-                offensiveKeys: report.gameplan?.offensiveKeys || [],
-                defensiveKeys: report.gameplan?.defensiveKeys || [],
-                practiceEmphasis: report.practiceEmphasis?.map(p => p.drill + ': ' + p.purpose) || []
-            };
-            
-            return report;
+            const parsed = JSON.parse(jsonMatch[0]);
+            console.log('✅ Parsed Claude response successfully');
+            return parsed;
+        } else {
+            console.warn('⚠️ No JSON found in Claude response');
+            return null;
         }
+        
     } catch (error) {
-        console.error('❌ Report generation error:', error);
+        console.error('❌ Claude API error:', error.message);
+        throw error;
     }
-
-    // Fallback to basic report from stats
-    return generateBasicReport(stats, opponentName, totalFrames);
 }
 
-function aggregateDetailedStats(frameAnalysis) {
-    const defenseCounts = {};
-    const offenseCounts = {};
-    const playerCounts = {};
-    const tempos = [];
-    const summaries = [];
-    const scoutingNotes = [];
-
-    for (const item of frameAnalysis) {
-        if (item.batchSummary) {
-            summaries.push(item.batchSummary);
-            continue;
+// Generate final report
+function generateReport(analysis, opponentName, frameCount) {
+    const defaultReport = {
+        opponent: opponentName,
+        generatedAt: new Date().toISOString(),
+        framesAnalyzed: frameCount,
+        confidence: Math.min(95, 70 + frameCount * 2),
+        
+        defense: {
+            primary: 'Man-to-Man',
+            secondary: null,
+            breakdown: [{ name: 'Man-to-Man', percentage: 100 }]
+        },
+        offense: {
+            topPlays: [{ name: 'Motion Offense', percentage: 50 }],
+            primaryStyle: 'Motion'
+        },
+        keyPlayers: [],
+        pace: {
+            rating: 50,
+            description: 'Moderate tempo'
+        },
+        recommendations: {
+            offensiveKeys: ['Move the ball', 'Attack in transition'],
+            defensiveKeys: ['Communicate', 'Contest shots'],
+            practiceEmphasis: ['Defensive rotations']
         }
-
-        // Defense
-        if (item.defense?.scheme) {
-            const scheme = item.defense.scheme.toLowerCase();
-            defenseCounts[scheme] = (defenseCounts[scheme] || 0) + 1;
-        }
-
-        // Offense
-        if (item.offense?.play) {
-            const play = item.offense.play.toLowerCase();
-            offenseCounts[play] = (offenseCounts[play] || 0) + 1;
-        }
-
-        // Players
-        if (item.players?.ballHandler) {
-            const player = item.players.ballHandler;
-            playerCounts[player] = (playerCounts[player] || 0) + 1;
-        }
-
-        // Tempo
-        if (item.situation?.tempo) {
-            const tempo = item.situation.tempo.toLowerCase();
-            if (tempo === 'fast') tempos.push(80);
-            else if (tempo === 'medium') tempos.push(50);
-            else if (tempo === 'slow') tempos.push(30);
-        }
-
-        // Notes
-        if (item.scoutingNotes) {
-            scoutingNotes.push(item.scoutingNotes);
-        }
-    }
-
-    const total = frameAnalysis.filter(f => !f.batchSummary).length || 1;
-
-    // Calculate breakdowns
-    const defenseBreakdown = Object.entries(defenseCounts)
-        .map(([name, count]) => ({ name, count, percentage: Math.round((count / total) * 100) }))
-        .sort((a, b) => b.count - a.count);
-
-    const offenseBreakdown = Object.entries(offenseCounts)
-        .map(([name, count]) => ({ name, count, percentage: Math.round((count / total) * 100) }))
-        .sort((a, b) => b.count - a.count);
-
-    const playerBreakdown = Object.entries(playerCounts)
-        .map(([name, count]) => ({ name, count, percentage: Math.round((count / total) * 100) }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 5);
-
-    const avgTempo = tempos.length > 0 
-        ? Math.round(tempos.reduce((a, b) => a + b, 0) / tempos.length)
-        : 50;
-
-    return {
-        totalFrames: total,
-        topDefense: defenseBreakdown[0]?.name || 'Unknown',
-        defenseBreakdown: defenseBreakdown.slice(0, 5),
-        topOffense: offenseBreakdown[0]?.name || 'Unknown',
-        offenseBreakdown: offenseBreakdown.slice(0, 5),
-        keyPlayers: playerBreakdown,
-        paceRating: avgTempo,
-        summaries,
-        scoutingNotes: scoutingNotes.slice(0, 10)
     };
-}
 
-function generateBasicReport(stats, opponentName, totalFrames) {
+    if (!analysis) {
+        console.warn('⚠️ No analysis data, using defaults');
+        return defaultReport;
+    }
+
+    // Merge analysis with defaults
     return {
         opponent: opponentName,
         generatedAt: new Date().toISOString(),
-        framesAnalyzed: totalFrames,
-        confidence: Math.min(90, 60 + totalFrames),
+        framesAnalyzed: frameCount,
+        confidence: Math.min(95, 70 + frameCount * 2),
         
-        defense: {
-            primary: stats.topDefense || 'Man-to-man',
-            secondary: stats.defenseBreakdown[1]?.name || null,
-            breakdown: stats.defenseBreakdown
-        },
-        
-        offense: {
-            topPlays: stats.offenseBreakdown,
-            primaryStyle: stats.topOffense || 'Motion'
-        },
-        
-        keyPlayers: stats.keyPlayers,
-        
-        pace: {
-            rating: stats.paceRating,
-            description: stats.paceRating > 65 ? 'Up-tempo, transition-focused' :
-                        stats.paceRating > 45 ? 'Balanced pace' : 'Slow, methodical half-court'
-        },
-        
-        recommendations: {
-            offensiveKeys: [
-                'Move the ball quickly against their defense',
-                'Attack early in transition',
-                'Look for mismatches to exploit'
-            ],
-            defensiveKeys: [
-                'Communicate on all screens',
-                'Limit their primary ball handler',
-                'Contest all shots'
-            ],
-            practiceEmphasis: stats.scoutingNotes.slice(0, 3)
-        },
-        
-        rawStats: stats
+        defense: analysis.defense || defaultReport.defense,
+        offense: analysis.offense || defaultReport.offense,
+        keyPlayers: analysis.keyPlayers || [],
+        pace: analysis.pace || defaultReport.pace,
+        strengths: analysis.strengths || [],
+        weaknesses: analysis.weaknesses || [],
+        recommendations: analysis.recommendations || defaultReport.recommendations
     };
 }
 
@@ -653,16 +420,25 @@ function cleanup(dir) {
     try {
         if (fs.existsSync(dir)) {
             fs.rmSync(dir, { recursive: true, force: true });
-            console.log('🧹 Cleaned up temp files');
+            console.log('🧹 Cleaned up:', dir);
         }
     } catch (error) {
-        console.warn('⚠️ Cleanup warning:', error.message);
+        console.warn('⚠️ Cleanup error:', error.message);
     }
 }
+
+// Global error handlers to prevent crashes
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error.message);
+    console.error(error.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection:', reason);
+});
 
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`🏀 CoachIQ API v2.0 running on port ${PORT}`);
-    console.log(`📊 Enhanced analysis with detailed Claude prompts`);
+    console.log(`🏀 CoachIQ API v2.1-stable running on port ${PORT}`);
 });
