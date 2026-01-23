@@ -1,0 +1,21 @@
+{
+  "name": "coachiq-backend",
+  "version": "1.0.0",
+  "description": "CoachIQ - AI Basketball Scouting API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@distube/ytdl-core": "^4.14.4",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "fluent-ffmpeg": "^2.1.2",
+    "uuid": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
