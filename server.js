@@ -1,41 +1,208 @@
-// CoachIQ Backend Server - STABLE VERSION
-// Better error handling, lower memory usage
+// CoachIQ Backend Server - WITH FILE UPLOAD & COMPRESSION
+// Handles large video files up to 10GB with automatic compression
 
 const express = require('express');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
-const ytdl = require('@distube/ytdl-core');
 const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const multer = require('multer');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+
+// Configure multer for chunked uploads
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const uploadDir = '/tmp/coachiq_uploads';
+        if (!fs.existsSync(uploadDir)) {
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueName = `${Date.now()}_${uuidv4()}_${file.originalname}`;
+        cb(null, uniqueName);
+    }
+});
+
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 10 * 1024 * 1024 * 1024 } // 10GB limit
+});
 
 // Initialize Anthropic
 const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Store reports in memory
+// Store reports and upload progress in memory
 const reports = new Map();
+const uploadProgress = new Map();
 
 // Health check endpoints
 app.get('/', (req, res) => {
-    res.json({ status: 'CoachIQ API is running', version: '2.1.0-stable' });
+    res.json({ 
+        status: 'CoachIQ API is running', 
+        version: '3.0.0-upload',
+        features: ['file-upload', 'compression', 'youtube', 'claude-vision']
+    });
 });
 
 app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
 });
 
-// Main analysis endpoint
+// ===========================================
+// CHUNK UPLOAD ENDPOINTS (for large files)
+// ===========================================
+
+// Initialize a chunked upload session
+app.post('/api/upload/init', (req, res) => {
+    const { fileName, fileSize, totalChunks } = req.body;
+    
+    const uploadId = uuidv4();
+    const uploadDir = `/tmp/coachiq_chunks_${uploadId}`;
+    
+    fs.mkdirSync(uploadDir, { recursive: true });
+    
+    uploadProgress.set(uploadId, {
+        id: uploadId,
+        fileName,
+        fileSize,
+        totalChunks,
+        receivedChunks: 0,
+        chunksDir: uploadDir,
+        status: 'uploading',
+        createdAt: new Date().toISOString()
+    });
+    
+    console.log(`📤 Upload initialized: ${uploadId} - ${fileName} (${(fileSize / 1024 / 1024).toFixed(1)} MB, ${totalChunks} chunks)`);
+    
+    res.json({ uploadId, status: 'ready' });
+});
+
+// Receive a chunk
+app.post('/api/upload/chunk', upload.single('chunk'), (req, res) => {
+    const { uploadId, chunkIndex } = req.body;
+    
+    const progress = uploadProgress.get(uploadId);
+    if (!progress) {
+        return res.status(404).json({ error: 'Upload session not found' });
+    }
+    
+    // Move chunk to proper location
+    const chunkPath = path.join(progress.chunksDir, `chunk_${chunkIndex.padStart(6, '0')}`);
+    fs.renameSync(req.file.path, chunkPath);
+    
+    progress.receivedChunks++;
+    uploadProgress.set(uploadId, progress);
+    
+    const percentComplete = Math.round((progress.receivedChunks / progress.totalChunks) * 100);
+    console.log(`📦 Chunk ${progress.receivedChunks}/${progress.totalChunks} received (${percentComplete}%)`);
+    
+    res.json({ 
+        received: progress.receivedChunks, 
+        total: progress.totalChunks,
+        percentComplete
+    });
+});
+
+// Finalize upload - combine chunks and start processing
+app.post('/api/upload/finalize', async (req, res) => {
+    const { uploadId, opponentName, analysisOptions } = req.body;
+    
+    const progress = uploadProgress.get(uploadId);
+    if (!progress) {
+        return res.status(404).json({ error: 'Upload session not found' });
+    }
+    
+    if (progress.receivedChunks < progress.totalChunks) {
+        return res.status(400).json({ 
+            error: 'Upload incomplete', 
+            received: progress.receivedChunks,
+            expected: progress.totalChunks
+        });
+    }
+    
+    // Create report
+    const reportId = uuidv4();
+    reports.set(reportId, {
+        id: reportId,
+        status: 'processing',
+        opponentName,
+        progress: 0,
+        progressText: 'Combining video chunks...',
+        createdAt: new Date().toISOString()
+    });
+    
+    // Start async processing
+    processUploadedVideo(reportId, uploadId, opponentName, analysisOptions || ['defense', 'offense', 'pace']);
+    
+    res.json({ 
+        reportId, 
+        status: 'processing',
+        message: 'Upload complete. Starting analysis...'
+    });
+});
+
+// Get upload progress
+app.get('/api/upload/:uploadId/progress', (req, res) => {
+    const progress = uploadProgress.get(req.params.uploadId);
+    if (!progress) {
+        return res.status(404).json({ error: 'Upload not found' });
+    }
+    res.json(progress);
+});
+
+// ===========================================
+// SIMPLE UPLOAD ENDPOINT (for smaller files < 100MB)
+// ===========================================
+app.post('/api/upload/simple', upload.single('video'), async (req, res) => {
+    try {
+        const { opponentName, analysisOptions } = req.body;
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No video file uploaded' });
+        }
+        
+        console.log(`📤 Simple upload received: ${req.file.originalname} (${(req.file.size / 1024 / 1024).toFixed(1)} MB)`);
+        
+        const reportId = uuidv4();
+        reports.set(reportId, {
+            id: reportId,
+            status: 'processing',
+            opponentName,
+            progress: 0,
+            progressText: 'Processing video...',
+            createdAt: new Date().toISOString()
+        });
+        
+        // Start async processing
+        processSimpleUpload(reportId, req.file.path, opponentName, analysisOptions ? JSON.parse(analysisOptions) : ['defense', 'offense', 'pace']);
+        
+        res.json({ 
+            reportId, 
+            status: 'processing',
+            message: 'Upload complete. Starting analysis...'
+        });
+        
+    } catch (error) {
+        console.error('Upload error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ===========================================
+// YOUTUBE URL ENDPOINT (existing)
+// ===========================================
 app.post('/api/analyze', async (req, res) => {
     const { videoUrl, opponentName, analysisOptions } = req.body;
 
-    console.log('📥 Received analysis request:', { videoUrl, opponentName });
+    console.log('📥 YouTube analysis request:', { videoUrl, opponentName });
 
     if (!videoUrl || !opponentName) {
         return res.status(400).json({ error: 'Missing videoUrl or opponentName' });
@@ -53,8 +220,13 @@ app.post('/api/analyze', async (req, res) => {
         createdAt: new Date().toISOString()
     });
 
-    // Start async processing - wrapped in try/catch
-    processVideo(reportId, videoUrl, opponentName, analysisOptions || ['defense', 'offense', 'pace']);
+    // For now, return error about YouTube blocking
+    reports.set(reportId, {
+        ...reports.get(reportId),
+        status: 'failed',
+        error: 'YouTube downloads are currently blocked. Please upload your video file directly instead.',
+        progress: 0
+    });
 
     res.json({ 
         reportId, 
@@ -74,47 +246,110 @@ app.get('/api/reports/:id', (req, res) => {
     res.json(report);
 });
 
-// Main processing function with full error handling
-async function processVideo(reportId, videoUrl, opponentName, analysisOptions) {
+// ===========================================
+// VIDEO PROCESSING FUNCTIONS
+// ===========================================
+
+async function processUploadedVideo(reportId, uploadId, opponentName, analysisOptions) {
+    const progress = uploadProgress.get(uploadId);
     const tempDir = `/tmp/coachiq_${reportId}`;
     
     try {
-        console.log('🏀 Starting analysis for report:', reportId);
+        fs.mkdirSync(tempDir, { recursive: true });
         
-        // Create temp directory
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-        }
+        // Step 1: Combine chunks
+        updateReport(reportId, { progress: 5, progressText: 'Combining video chunks...' });
+        console.log('📦 Combining chunks...');
+        
+        const combinedPath = path.join(tempDir, 'original_video.mp4');
+        await combineChunks(progress.chunksDir, combinedPath);
+        
+        // Clean up chunks
+        fs.rmSync(progress.chunksDir, { recursive: true, force: true });
+        uploadProgress.delete(uploadId);
+        
+        // Continue with common processing
+        await processVideoFile(reportId, combinedPath, opponentName, analysisOptions, tempDir);
+        
+    } catch (error) {
+        console.error('❌ Processing error:', error);
+        reports.set(reportId, {
+            ...reports.get(reportId),
+            status: 'failed',
+            error: error.message
+        });
+        cleanup(tempDir);
+    }
+}
 
-        // Step 1: Download video
-        updateReport(reportId, { progress: 5, progressText: 'Downloading video...' });
-        console.log('📥 Downloading video...');
+async function processSimpleUpload(reportId, videoPath, opponentName, analysisOptions) {
+    const tempDir = `/tmp/coachiq_${reportId}`;
+    
+    try {
+        fs.mkdirSync(tempDir, { recursive: true });
         
-        const videoPath = path.join(tempDir, 'video.mp4');
-        await downloadYouTubeVideo(videoUrl, videoPath);
-        console.log('✅ Video downloaded');
+        // Move uploaded file to temp dir
+        const originalPath = path.join(tempDir, 'original_video.mp4');
+        fs.renameSync(videoPath, originalPath);
         
-        // Step 2: Extract frames - REDUCED for stability
-        updateReport(reportId, { progress: 25, progressText: 'Extracting frames...' });
+        await processVideoFile(reportId, originalPath, opponentName, analysisOptions, tempDir);
+        
+    } catch (error) {
+        console.error('❌ Processing error:', error);
+        reports.set(reportId, {
+            ...reports.get(reportId),
+            status: 'failed',
+            error: error.message
+        });
+        cleanup(tempDir);
+    }
+}
+
+async function processVideoFile(reportId, videoPath, opponentName, analysisOptions, tempDir) {
+    try {
+        // Get video info
+        const videoInfo = await getVideoInfo(videoPath);
+        console.log('📹 Video info:', videoInfo);
+        
+        const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
+        console.log(`📁 File size: ${fileSizeMB.toFixed(1)} MB`);
+        
+        // Step 2: Compress if needed (files > 200MB)
+        let processedPath = videoPath;
+        if (fileSizeMB > 200) {
+            updateReport(reportId, { progress: 15, progressText: `Compressing video (${fileSizeMB.toFixed(0)}MB → ~100MB)...` });
+            console.log('🗜️ Compressing large video...');
+            
+            processedPath = path.join(tempDir, 'compressed_video.mp4');
+            await compressVideo(videoPath, processedPath, {
+                targetSizeMB: 100,
+                maxDuration: 600 // 10 minutes max for analysis
+            });
+            
+            const compressedSize = fs.statSync(processedPath).size / (1024 * 1024);
+            console.log(`✅ Compressed to ${compressedSize.toFixed(1)} MB`);
+        }
+        
+        // Step 3: Extract frames
+        updateReport(reportId, { progress: 35, progressText: 'Extracting key frames...' });
         console.log('🎞️ Extracting frames...');
         
-        const frames = await extractFrames(videoPath, tempDir);
+        const frames = await extractFrames(processedPath, tempDir);
         console.log(`✅ Extracted ${frames.length} frames`);
         
-        // Step 3: Analyze with Claude
-        updateReport(reportId, { progress: 40, progressText: 'AI analyzing video...' });
+        // Step 4: Analyze with Claude
+        updateReport(reportId, { progress: 50, progressText: `Analyzing ${frames.length} frames with AI...` });
         console.log('🤖 Sending to Claude...');
         
         const analysis = await analyzeWithClaude(frames, opponentName);
         console.log('✅ Claude analysis complete');
         
-        // Step 4: Generate report
-        updateReport(reportId, { progress: 80, progressText: 'Generating report...' });
-        console.log('📋 Generating report...');
+        // Step 5: Generate report
+        updateReport(reportId, { progress: 85, progressText: 'Generating detailed report...' });
         
-        const report = generateReport(analysis, opponentName, frames.length);
+        const report = generateReport(analysis, opponentName, frames.length, videoInfo);
         
-        // Step 5: Save final report
+        // Save final report
         reports.set(reportId, {
             ...reports.get(reportId),
             status: 'complete',
@@ -125,141 +360,165 @@ async function processVideo(reportId, videoUrl, opponentName, analysisOptions) {
         });
 
         console.log('✅ Analysis complete for report:', reportId);
-
-    } catch (error) {
-        console.error('❌ Processing error:', error.message);
-        console.error(error.stack);
         
-        reports.set(reportId, {
-            ...reports.get(reportId),
-            status: 'failed',
-            error: error.message,
-            progress: 0,
-            progressText: 'Failed: ' + error.message
-        });
+    } catch (error) {
+        throw error;
     } finally {
-        // Always cleanup
         cleanup(tempDir);
     }
 }
 
-function updateReport(reportId, updates) {
-    const current = reports.get(reportId);
-    if (current) {
-        reports.set(reportId, { ...current, ...updates });
-    }
-}
-
-// Download YouTube video - with timeout and error handling
-async function downloadYouTubeVideo(url, outputPath) {
+// Combine chunks into single file
+async function combineChunks(chunksDir, outputPath) {
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error('Download timeout after 3 minutes'));
-        }, 3 * 60 * 1000);
-
-        try {
-            console.log('🔗 Fetching video info...');
+        const chunks = fs.readdirSync(chunksDir)
+            .filter(f => f.startsWith('chunk_'))
+            .sort();
+        
+        const writeStream = fs.createWriteStream(outputPath);
+        
+        let index = 0;
+        
+        function writeNextChunk() {
+            if (index >= chunks.length) {
+                writeStream.end();
+                resolve();
+                return;
+            }
             
-            const video = ytdl(url, { 
-                quality: 'lowest',
-                filter: 'videoandaudio'
-            });
+            const chunkPath = path.join(chunksDir, chunks[index]);
+            const readStream = fs.createReadStream(chunkPath);
             
-            const writeStream = fs.createWriteStream(outputPath);
-            
-            video.on('info', (info) => {
-                console.log('📹 Video:', info.videoDetails.title);
-                console.log('⏱️ Duration:', info.videoDetails.lengthSeconds, 'seconds');
+            readStream.pipe(writeStream, { end: false });
+            readStream.on('end', () => {
+                index++;
+                writeNextChunk();
             });
-
-            video.on('error', (err) => {
-                clearTimeout(timeout);
-                console.error('❌ Video stream error:', err.message);
-                reject(err);
-            });
-
-            writeStream.on('error', (err) => {
-                clearTimeout(timeout);
-                console.error('❌ Write stream error:', err.message);
-                reject(err);
-            });
-
-            writeStream.on('finish', () => {
-                clearTimeout(timeout);
-                console.log('✅ Download complete');
-                resolve(outputPath);
-            });
-
-            video.pipe(writeStream);
-            
-        } catch (error) {
-            clearTimeout(timeout);
-            reject(error);
+            readStream.on('error', reject);
         }
+        
+        writeStream.on('error', reject);
+        writeNextChunk();
     });
 }
 
-// Extract frames - OPTIMIZED for low memory
+// Get video information
+function getVideoInfo(videoPath) {
+    return new Promise((resolve, reject) => {
+        ffmpeg.ffprobe(videoPath, (err, metadata) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            
+            const videoStream = metadata.streams.find(s => s.codec_type === 'video');
+            
+            resolve({
+                duration: metadata.format.duration,
+                width: videoStream?.width,
+                height: videoStream?.height,
+                codec: videoStream?.codec_name,
+                bitrate: metadata.format.bit_rate,
+                size: metadata.format.size
+            });
+        });
+    });
+}
+
+// Compress video for analysis
+function compressVideo(inputPath, outputPath, options = {}) {
+    const { targetSizeMB = 100, maxDuration = 600 } = options;
+    
+    return new Promise((resolve, reject) => {
+        // Calculate target bitrate (rough estimate)
+        const targetBitrate = Math.floor((targetSizeMB * 8 * 1024) / maxDuration); // kbps
+        
+        console.log(`🎬 Compressing to ~${targetBitrate}kbps, max ${maxDuration}s`);
+        
+        ffmpeg(inputPath)
+            .outputOptions([
+                '-c:v libx264',           // H.264 codec
+                '-preset fast',            // Fast encoding
+                '-crf 28',                 // Quality (higher = smaller file)
+                `-b:v ${targetBitrate}k`,  // Target bitrate
+                '-maxrate ' + (targetBitrate * 1.5) + 'k',
+                '-bufsize ' + (targetBitrate * 2) + 'k',
+                '-vf scale=854:-2',        // Scale to 480p width
+                '-t ' + maxDuration,       // Max duration
+                '-an',                     // Remove audio (not needed for analysis)
+                '-y'                       // Overwrite output
+            ])
+            .output(outputPath)
+            .on('start', (cmd) => {
+                console.log('🎬 FFmpeg compression started');
+            })
+            .on('progress', (progress) => {
+                if (progress.percent) {
+                    console.log(`🎬 Compression: ${progress.percent.toFixed(1)}%`);
+                }
+            })
+            .on('end', () => {
+                console.log('✅ Compression complete');
+                resolve(outputPath);
+            })
+            .on('error', (err) => {
+                console.error('❌ Compression error:', err);
+                reject(err);
+            })
+            .run();
+    });
+}
+
+// Extract frames from video
 async function extractFrames(videoPath, outputDir) {
     return new Promise((resolve, reject) => {
         const frames = [];
         const framesDir = path.join(outputDir, 'frames');
         
-        try {
-            if (!fs.existsSync(framesDir)) {
-                fs.mkdirSync(framesDir, { recursive: true });
-            }
+        fs.mkdirSync(framesDir, { recursive: true });
 
-            // Extract only 12 frames, every 8 seconds - much lighter on memory
-            ffmpeg(videoPath)
-                .outputOptions([
-                    '-vf', 'fps=1/8,scale=640:-1',  // 1 frame per 8 sec, scaled down
-                    '-frames:v', '12',              // Max 12 frames
-                    '-q:v', '5'                     // Lower quality = smaller files
-                ])
-                .output(path.join(framesDir, 'frame_%03d.jpg'))
-                .on('start', (cmd) => {
-                    console.log('🎬 FFmpeg started');
-                })
-                .on('end', () => {
-                    console.log('🎬 FFmpeg finished');
-                    
-                    try {
-                        const files = fs.readdirSync(framesDir)
-                            .filter(f => f.endsWith('.jpg'))
-                            .sort();
-                        
-                        console.log(`📁 Found ${files.length} frame files`);
-                        
-                        for (const file of files) {
-                            const filePath = path.join(framesDir, file);
-                            const data = fs.readFileSync(filePath);
-                            frames.push({
-                                filename: file,
-                                base64: data.toString('base64')
-                            });
-                            // Delete file immediately to save memory
-                            fs.unlinkSync(filePath);
-                        }
-                        
-                        resolve(frames);
-                    } catch (readError) {
-                        reject(readError);
-                    }
-                })
-                .on('error', (err) => {
-                    console.error('❌ FFmpeg error:', err.message);
-                    reject(err);
-                })
-                .run();
+        ffmpeg(videoPath)
+            .outputOptions([
+                '-vf', 'fps=1/8,scale=640:-1',  // 1 frame per 8 seconds, scaled
+                '-frames:v', '15',              // Max 15 frames
+                '-q:v', '5'                     // Quality
+            ])
+            .output(path.join(framesDir, 'frame_%03d.jpg'))
+            .on('start', () => {
+                console.log('🎬 Frame extraction started');
+            })
+            .on('end', () => {
+                console.log('🎬 Frame extraction complete');
                 
-        } catch (error) {
-            reject(error);
-        }
+                try {
+                    const files = fs.readdirSync(framesDir)
+                        .filter(f => f.endsWith('.jpg'))
+                        .sort();
+                    
+                    for (const file of files) {
+                        const filePath = path.join(framesDir, file);
+                        const data = fs.readFileSync(filePath);
+                        frames.push({
+                            filename: file,
+                            base64: data.toString('base64')
+                        });
+                        fs.unlinkSync(filePath); // Clean up immediately
+                    }
+                    
+                    resolve(frames);
+                } catch (readError) {
+                    reject(readError);
+                }
+            })
+            .on('error', (err) => {
+                console.error('❌ Frame extraction error:', err);
+                reject(err);
+            })
+            .run();
     });
 }
 
-// Analyze with Claude - simplified and more robust
+// Analyze frames with Claude
 async function analyzeWithClaude(frames, opponentName) {
     if (frames.length === 0) {
         throw new Error('No frames to analyze');
@@ -267,7 +526,6 @@ async function analyzeWithClaude(frames, opponentName) {
 
     console.log(`🤖 Analyzing ${frames.length} frames...`);
     
-    // Send all frames in ONE request to minimize API calls
     const imageContent = frames.map(frame => ({
         type: 'image',
         source: {
@@ -277,57 +535,54 @@ async function analyzeWithClaude(frames, opponentName) {
         }
     }));
 
-    const prompt = `You are an expert basketball scout analyzing game film of "${opponentName}".
+    const prompt = `You are an elite basketball scout with 20+ years of experience. You're analyzing game film of "${opponentName}".
 
-Analyze these ${frames.length} frames from a basketball game and provide a comprehensive scouting report.
+Analyze these ${frames.length} frames and provide a comprehensive scouting report.
 
-For the overall video, identify:
-
-1. **DEFENSIVE SCHEMES**: What defense do they primarily run? (man-to-man, 2-3 zone, 3-2 zone, 1-3-1, press, etc.)
-
-2. **OFFENSIVE PLAYS**: What offensive sets/plays do you see? (pick and roll, motion, horns, flex, isolation, fast break, etc.)
-
-3. **KEY PLAYERS**: Any players who stand out? (jersey numbers if visible, positions, roles)
-
-4. **PACE/TEMPO**: Do they play fast or slow? Push transition or set up half-court?
-
-5. **STRENGTHS**: What do they do well?
-
-6. **WEAKNESSES**: What can be exploited?
+Identify:
+1. **DEFENSIVE SCHEMES**: What defense do they run? (man-to-man, 2-3 zone, 3-2 zone, 1-3-1, 1-2-2, match-up zone, press, etc.)
+2. **OFFENSIVE PLAYS**: What plays/sets do you see? (pick and roll, motion, horns, flex, dribble-drive, isolation, fast break, princeton, etc.)
+3. **KEY PLAYERS**: Any standout players? (jersey numbers if visible, positions, tendencies)
+4. **PACE/TEMPO**: Fast or slow? Transition or half-court focused?
+5. **BALL MOVEMENT**: Good passing? Stagnant? 
+6. **SPACING**: Good floor spacing or bunched up?
+7. **STRENGTHS**: What do they do well?
+8. **WEAKNESSES**: What can be exploited?
 
 Respond with this JSON format:
 {
   "defense": {
-    "primary": "main defensive scheme",
-    "secondary": "backup scheme if any",
+    "primary": "main defensive scheme (be specific)",
+    "secondary": "backup scheme if visible",
     "breakdown": [
-      {"name": "scheme name", "percentage": 60},
-      {"name": "other scheme", "percentage": 40}
+      {"name": "Man-to-Man", "percentage": 70},
+      {"name": "2-3 Zone", "percentage": 30}
     ],
-    "notes": "defensive tendencies and observations"
+    "notes": "specific defensive observations and tendencies"
   },
   "offense": {
     "primaryStyle": "main offensive approach",
     "topPlays": [
-      {"name": "play name", "percentage": 30, "notes": "how they run it"},
-      {"name": "another play", "percentage": 25, "notes": "details"}
+      {"name": "Pick and Roll", "percentage": 35, "notes": "how they run it"},
+      {"name": "Motion", "percentage": 25, "notes": "details"}
     ],
-    "ballMovement": "good/average/poor",
-    "spacing": "good/average/poor"
+    "ballMovement": "excellent/good/average/poor",
+    "spacing": "excellent/good/average/poor",
+    "notes": "offensive tendencies"
   },
   "keyPlayers": [
-    {"name": "#23 or PG", "role": "primary ball handler", "percentage": 40, "notes": "tendencies"}
+    {"name": "#23 or Point Guard", "role": "primary ball handler", "percentage": 45, "notes": "tendencies, strengths, weaknesses"}
   ],
   "pace": {
     "rating": 65,
-    "description": "description of their tempo"
+    "description": "description of their tempo and transition tendencies"
   },
-  "strengths": ["strength 1", "strength 2"],
-  "weaknesses": ["weakness 1", "weakness 2"],
+  "strengths": ["specific strength 1", "specific strength 2", "specific strength 3"],
+  "weaknesses": ["specific weakness 1", "specific weakness 2", "specific weakness 3"],
   "recommendations": {
-    "offensiveKeys": ["how to attack them", "specific strategies"],
-    "defensiveKeys": ["how to defend them", "specific strategies"],
-    "practiceEmphasis": ["what to work on in practice"]
+    "offensiveKeys": ["specific way to attack their defense", "another strategy"],
+    "defensiveKeys": ["how to defend their offense", "key matchup advice"],
+    "practiceEmphasis": ["drill or concept to practice", "another focus area"]
   }
 }`;
 
@@ -350,13 +605,9 @@ Respond with this JSON format:
         const jsonMatch = text.match(/\{[\s\S]*\}/);
         
         if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0]);
-            console.log('✅ Parsed Claude response successfully');
-            return parsed;
-        } else {
-            console.warn('⚠️ No JSON found in Claude response');
-            return null;
+            return JSON.parse(jsonMatch[0]);
         }
+        return null;
         
     } catch (error) {
         console.error('❌ Claude API error:', error.message);
@@ -365,13 +616,13 @@ Respond with this JSON format:
 }
 
 // Generate final report
-function generateReport(analysis, opponentName, frameCount) {
+function generateReport(analysis, opponentName, frameCount, videoInfo) {
     const defaultReport = {
         opponent: opponentName,
         generatedAt: new Date().toISOString(),
         framesAnalyzed: frameCount,
+        videoDuration: videoInfo?.duration ? Math.round(videoInfo.duration) : null,
         confidence: Math.min(95, 70 + frameCount * 2),
-        
         defense: {
             primary: 'Man-to-Man',
             secondary: null,
@@ -382,10 +633,9 @@ function generateReport(analysis, opponentName, frameCount) {
             primaryStyle: 'Motion'
         },
         keyPlayers: [],
-        pace: {
-            rating: 50,
-            description: 'Moderate tempo'
-        },
+        pace: { rating: 50, description: 'Moderate tempo' },
+        strengths: [],
+        weaknesses: [],
         recommendations: {
             offensiveKeys: ['Move the ball', 'Attack in transition'],
             defensiveKeys: ['Communicate', 'Contest shots'],
@@ -393,18 +643,14 @@ function generateReport(analysis, opponentName, frameCount) {
         }
     };
 
-    if (!analysis) {
-        console.warn('⚠️ No analysis data, using defaults');
-        return defaultReport;
-    }
+    if (!analysis) return defaultReport;
 
-    // Merge analysis with defaults
     return {
         opponent: opponentName,
         generatedAt: new Date().toISOString(),
         framesAnalyzed: frameCount,
+        videoDuration: videoInfo?.duration ? Math.round(videoInfo.duration) : null,
         confidence: Math.min(95, 70 + frameCount * 2),
-        
         defense: analysis.defense || defaultReport.defense,
         offense: analysis.offense || defaultReport.offense,
         keyPlayers: analysis.keyPlayers || [],
@@ -415,7 +661,13 @@ function generateReport(analysis, opponentName, frameCount) {
     };
 }
 
-// Cleanup temp files
+function updateReport(reportId, updates) {
+    const current = reports.get(reportId);
+    if (current) {
+        reports.set(reportId, { ...current, ...updates });
+    }
+}
+
 function cleanup(dir) {
     try {
         if (fs.existsSync(dir)) {
@@ -427,18 +679,19 @@ function cleanup(dir) {
     }
 }
 
-// Global error handlers to prevent crashes
+// Global error handlers
 process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error.message);
-    console.error(error.stack);
 });
 
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
     console.error('❌ Unhandled Rejection:', reason);
 });
 
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`🏀 CoachIQ API v2.1-stable running on port ${PORT}`);
+    console.log(`🏀 CoachIQ API v3.0 running on port ${PORT}`);
+    console.log(`📤 File upload enabled (up to 10GB with chunking)`);
+    console.log(`🗜️ Auto-compression for large files`);
 });
