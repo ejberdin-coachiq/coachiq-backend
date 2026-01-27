@@ -1,7 +1,7 @@
 {
   "name": "coachiq-backend",
-  "version": "4.0.0",
-  "description": "CoachIQ API with email notifications and dashboard",
+  "version": "6.0.0",
+  "description": "CoachIQ API - Comprehensive basketball analysis for all skill levels",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
