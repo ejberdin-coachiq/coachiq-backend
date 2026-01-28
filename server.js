@@ -254,6 +254,100 @@ Teams may run simplified or advanced versions. Identify what you actually see.
 8. **Post Position** - Where are the bigs?
 9. **Transition** - Is this fast break or half court?
 
+---
+
+### ADVANCED ANALYTICS TO TRACK
+
+#### OFFENSIVE SET EFFICIENCY
+For each offensive set/play identified, track:
+- **Frequency**: How many times the set is run
+- **Points Generated**: Estimated points scored from this set
+- **Points Per Possession (PPP)**: Efficiency of the set
+- **Primary Beneficiary**: Which player benefits most from this set
+
+#### PLAYER-SPECIFIC SETS
+Track which offensive sets are designed for specific players:
+- Post-ups for bigs
+- Pick and roll for ball handlers
+- Pin downs/flares for shooters
+- Isolation plays for scorers
+
+#### PACE & POSSESSION METRICS
+- **Possessions Observed**: Count total offensive possessions
+- **Estimated Pace**: Project possessions per 40-minute game
+- **Average Possession Length**: How long they take per possession
+- **Shot Clock Usage**: Early (0-10 sec), Middle (10-20 sec), Late (20+ sec)
+
+#### BALL MOVEMENT METRICS
+- **Ball Reversals**: Number of times ball crosses the paint/lane
+- **Passes Per Possession**: Average number of passes before shot
+- **Skip Passes**: Long cross-court passes
+- **Touch Distribution**: How many players touch the ball per possession
+
+#### TRANSITION & TURNOVER METRICS
+- **Transition Frequency**: % of possessions in transition
+- **Transition Efficiency**: Points per transition possession
+- **Turnover-to-Score Rate**: When opponent turns it over, how often do they score?
+- **Live Ball vs Dead Ball Turnovers**: Which type leads to more opponent points?
+
+#### TEAM VALUE IDENTIFICATION
+Identify the MOST VALUABLE aspect of each team's game:
+- Is it their transition offense?
+- Their half-court execution?
+- A specific player?
+- Their defensive intensity?
+- Their rebounding?
+- Their ball movement?
+
+---
+
+### ADVANCED ANALYTICS TO TRACK
+
+#### OFFENSIVE SET EFFICIENCY
+Track each offensive set with:
+- **Frequency** - How often they run it (% of possessions)
+- **Points Per Possession (PPP)** - Points scored when running this set
+- **Outcome** - Score, turnover, missed shot, foul drawn
+- **Primary Option** - Who the play is designed for
+- **Success Rate** - % of times the play achieves its goal
+
+#### PLAYER-SPECIFIC SETS
+Identify which offensive sets are run specifically for certain players:
+- Post-ups for specific bigs
+- Isolation plays for scorers
+- Pin-downs/screens for shooters
+- Pick-and-roll with specific ball handlers
+- Designed plays after timeouts for closers
+
+#### PACE & TEMPO METRICS
+- **Possessions per game estimate** - Based on pace of play observed
+- **Average possession length** - Seconds per possession
+- **Shot clock usage** - Early (0-10 sec), Middle (10-20 sec), Late (20-30+ sec)
+- **Transition frequency** - % of possessions in transition vs half-court
+- **Secondary break usage** - Do they run early offense before full set?
+
+#### BALL MOVEMENT ANALYTICS
+- **Reversals per possession** - How often ball goes side-to-side
+- **Passes before shot** - Average number of passes
+- **Drive-and-kick frequency** - Penetration creating open shots
+- **Skip pass usage** - Ball movement skipping one or more players
+- **Post entry frequency** - How often they feed the post
+
+#### TURNOVER ANALYSIS
+- **Live ball turnovers** - Steals that lead to fast breaks
+- **Dead ball turnovers** - Out of bounds, offensive fouls, violations
+- **Turnover conversion rate** - % of turnovers that become opponent scores
+- **Turnover-to-score speed** - How quickly turnovers become points
+- **High turnover situations** - When/where turnovers happen most
+
+#### TEAM VALUE IDENTIFICATION
+Identify the MOST VALUABLE aspects of a team's game:
+- **Offensive identity** - What makes them dangerous (3PT shooting, post play, transition, etc.)
+- **Go-to plays** - What they run when they NEED a bucket
+- **Defensive identity** - What makes them hard to score against
+- **X-factor** - The intangible that makes them win games
+- **Clutch tendencies** - What they do in close games
+
 `;
 
 // ===========================================
@@ -399,6 +493,81 @@ Look for and identify:
 
 ---
 
+## ADVANCED ANALYTICS CHECKLIST
+
+### Offensive Set Efficiency
+For EACH set you identify, track:
+- [ ] How many times was it run?
+- [ ] Did it result in a score, miss, or turnover?
+- [ ] Who is the primary option on this play?
+- [ ] What percentage of possessions use this set?
+- [ ] Estimate points per possession for this set
+
+### Player-Specific Sets
+- [ ] Which plays are designed specifically for certain players?
+- [ ] Who gets ISO plays?
+- [ ] Who do they run pick and roll for?
+- [ ] Who gets screens set for them?
+- [ ] What is each key player's go-to move?
+
+### Pace & Tempo
+- [ ] How fast do they play? (estimate possessions per game)
+- [ ] How long are their possessions on average?
+- [ ] Do they shoot early, middle, or late in shot clock?
+- [ ] What % of possessions are transition vs half-court?
+- [ ] Do they push pace or control tempo?
+
+### Ball Movement Deep Dive
+- [ ] How many times per possession do they reverse the ball?
+- [ ] Average passes before a shot attempt?
+- [ ] Do they penetrate and kick frequently?
+- [ ] Do they use skip passes?
+- [ ] How often do they enter the post?
+- [ ] Does the ball stick with certain players?
+
+### Turnover Patterns
+- [ ] Are turnovers live ball (steals) or dead ball (violations)?
+- [ ] What % of turnovers become opponent scores?
+- [ ] Where/when do turnovers happen most?
+- [ ] What causes their turnovers?
+- [ ] How can you force turnovers against them?
+
+### Team Value Assessment
+- [ ] What is their SINGLE MOST VALUABLE offensive trait?
+- [ ] What makes them MOST DANGEROUS?
+- [ ] What is their go-to play when they NEED a bucket?
+- [ ] What do they do in CLUTCH situations?
+- [ ] What is the X-FACTOR that wins them games?
+- [ ] What MUST you stop to beat this team?
+
+### Set Frequency & Scoring (TRACK EVERY SET)
+For each offensive set identified, count:
+- [ ] How many times was this EXACT set run?
+- [ ] How many POINTS were scored from this set?
+- [ ] Calculate Points Per Possession for this set
+- [ ] Who is the PRIMARY beneficiary of this set?
+- [ ] What is the best way to DEFEND this set?
+
+Example tracking:
+- Flex: Run 8 times, scored 10 points = 1.25 PPP
+- Horns PnR: Run 12 times, scored 16 points = 1.33 PPP
+- Transition: Run 7 times, scored 10 points = 1.43 PPP
+
+### Ball Reversal Tracking
+- [ ] COUNT total ball reversals observed
+- [ ] Calculate reversals PER POSSESSION
+- [ ] Note IMPACT of reversals (better shots after reversal?)
+- [ ] Identify if reversals are part of their offense design or forced
+
+### Turnover-to-Score Conversion
+When you see a turnover, track:
+- [ ] Was it LIVE ball (steal) or DEAD ball (out of bounds)?
+- [ ] Did it result in OPPONENT SCORE?
+- [ ] How QUICKLY did score happen after turnover?
+- [ ] Calculate CONVERSION RATE (turnovers that become scores)
+
+---
+
 ## RESPONSE FORMAT
 
 Provide your analysis in this JSON structure. Be thorough and specific:
@@ -409,6 +578,289 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     "estimated": "youth | middle_school | high_school | college | professional",
     "indicators": ["Why you believe this level"],
     "confidence": 75
+  },
+
+  "paceAndTempo": {
+    "possessionsPerGameEstimate": 65,
+    "paceRating": 72,
+    "paceCategory": "slow | moderate | fast | very_fast",
+    "averagePossessionLength": "18 seconds",
+    "shotClockUsage": {
+      "early": 15,
+      "middle": 45,
+      "late": 40,
+      "description": "Patient team that works for good shots"
+    },
+    "transitionFrequency": {
+      "percentage": 22,
+      "style": "push_always | opportunistic | conservative",
+      "effectiveness": "How well they score in transition"
+    },
+    "tempoControl": "Do they speed up or slow down based on situation"
+  },
+
+  "offensiveSetEfficiency": {
+    "setBreakdown": [
+      {
+        "setName": "Horns Flare",
+        "timesRun": 12,
+        "frequency": 28,
+        "pointsScored": 14,
+        "pointsPerPossession": 1.17,
+        "outcomes": {
+          "scores": 6,
+          "missedShots": 4,
+          "turnovers": 1,
+          "foulsDrawn": 1
+        },
+        "successRate": 58,
+        "primaryOption": "#23 off the flare screen",
+        "notes": "Most effective when run to the right side"
+      }
+    ],
+    "mostEfficientSet": {
+      "name": "Pick and Roll with #23/#34",
+      "ppp": 1.24,
+      "whyItWorks": "Roll man finishes at rim, defense collapses"
+    },
+    "leastEfficientSet": {
+      "name": "Isolation for #11",
+      "ppp": 0.72,
+      "whyItFails": "Predictable, no secondary options"
+    }
+  },
+
+  "playerSpecificSets": [
+    {
+      "player": "#23 (Point Guard)",
+      "designedPlays": [
+        {
+          "setName": "High Pick and Roll",
+          "frequency": "35% of his possessions",
+          "effectiveness": "1.18 PPP",
+          "bestCounter": "ICE the ball screen, wall off"
+        },
+        {
+          "setName": "Isolation Left Wing",
+          "frequency": "15% of his possessions",
+          "effectiveness": "0.89 PPP",
+          "bestCounter": "Force right, no help needed"
+        }
+      ],
+      "goToMove": "Step-back three from right wing",
+      "comfortZone": "Right side of floor, top of key"
+    }
+  ],
+
+  "ballMovementAnalytics": {
+    "reversalsPerPossession": 1.8,
+    "reversalTendency": "heavy | moderate | light | rare",
+    "passesBeforeShot": 4.2,
+    "driveAndKick": {
+      "frequency": "How often they penetrate and kick",
+      "effectiveness": "Points generated from drive-kicks",
+      "primaryDrivers": ["#23", "#5"]
+    },
+    "skipPassUsage": {
+      "frequency": "How often they skip the ball",
+      "situations": "When they use skip passes",
+      "effectiveness": "Open shots generated"
+    },
+    "postEntryFrequency": {
+      "percentage": 18,
+      "primaryPostPlayers": ["#34", "#44"],
+      "postToPPP": 0.92
+    },
+    "ballMovementRating": "excellent | good | average | poor",
+    "stagnationTendency": "Does ball stick with certain players"
+  },
+
+  "turnoverAnalysis": {
+    "estimatedTurnoverRate": 14,
+    "turnoverTypes": {
+      "liveBall": {
+        "frequency": 60,
+        "description": "Steals leading to fast breaks"
+      },
+      "deadBall": {
+        "frequency": 40,
+        "description": "Out of bounds, charges, violations"
+      }
+    },
+    "turnoverConversion": {
+      "conversionRate": 72,
+      "description": "72% of their turnovers become opponent scores",
+      "averagePointsOffTurnover": 1.4,
+      "fastBreakAfterTurnover": "How quickly opponents score"
+    },
+    "highTurnoverSituations": [
+      {
+        "situation": "Entry passes to post",
+        "frequency": "Most common turnover",
+        "cause": "Weak entry passes, active hands on defense"
+      },
+      {
+        "situation": "Transition turnovers",
+        "frequency": "Second most common",
+        "cause": "Pushing pace too fast, poor decisions"
+      }
+    ],
+    "turnoverVulnerabilities": "When and how to force turnovers against them"
+  },
+
+  "teamValueIdentification": {
+    "offensiveIdentity": {
+      "primaryStrength": "Three-point shooting from corners",
+      "whatMakesThemDangerous": "Ball movement creates open 3s, 5 shooters",
+      "offensiveRating": 112,
+      "scoringDistribution": {
+        "paint": 38,
+        "midRange": 18,
+        "threePoint": 44
+      }
+    },
+    "defensiveIdentity": {
+      "primaryStrength": "Rim protection and shot blocking",
+      "whatMakesThemTough": "Length disrupts shots, force difficult finishes",
+      "defensiveRating": 105
+    },
+    "goToPlays": {
+      "needABucket": "Horns into high pick and roll for #23",
+      "lastShot": "Clear out ISO for #23 on right wing",
+      "afterTimeout": "Stagger screens for #11 three-pointer"
+    },
+    "xFactor": {
+      "description": "The intangible that wins them games",
+      "player": "Who is their X-factor",
+      "situation": "When they elevate their play"
+    },
+    "clutchTendencies": {
+      "closeGameStrategy": "What they do with lead vs trailing",
+      "finalMinutePlays": "Go-to actions in crunch time",
+      "freeThrowShooting": "Who shoots in pressure situations"
+    },
+    "mostValuableAspect": "SINGLE MOST IMPORTANT THING - What you MUST stop to beat them"
+  },
+
+  "offensiveSetTracking": {
+    "totalPossessionsObserved": 45,
+    "setBySetBreakdown": [
+      {
+        "setName": "Flex",
+        "timesRun": 8,
+        "pointsScored": 10,
+        "pointsPerPossession": 1.25,
+        "percentageOfPossessions": 18,
+        "outcomes": {
+          "madeBaskets": 4,
+          "missedShots": 3,
+          "turnovers": 1,
+          "foulsDrawn": 0
+        },
+        "primaryBeneficiary": "#23 - gets open on baseline cut",
+        "bestDefense": "Switch the down screen, front the cutter"
+      },
+      {
+        "setName": "Horns PnR",
+        "timesRun": 12,
+        "pointsScored": 16,
+        "pointsPerPossession": 1.33,
+        "percentageOfPossessions": 27,
+        "outcomes": {
+          "madeBaskets": 7,
+          "missedShots": 4,
+          "turnovers": 1,
+          "foulsDrawn": 2
+        },
+        "primaryBeneficiary": "#23 as ball handler, #34 as roll man",
+        "bestDefense": "ICE the ball screen, tag the roller"
+      }
+    ],
+    "mostRunSet": {
+      "name": "Horns PnR",
+      "frequency": "27% of possessions"
+    },
+    "mostEfficientSet": {
+      "name": "Transition",
+      "ppp": 1.45
+    },
+    "leastEfficientSet": {
+      "name": "Post Iso for #44",
+      "ppp": 0.67
+    }
+  },
+
+  "playerSetAssignments": [
+    {
+      "player": "#23 (Point Guard)",
+      "setsRunForThisPlayer": [
+        { "set": "High PnR", "frequency": 35, "ppp": 1.18 },
+        { "set": "ISO Left Wing", "frequency": 12, "ppp": 0.89 }
+      ],
+      "totalTouches": "Handles ball 68% of half-court possessions",
+      "mostEffectiveAction": "PnR going right, attack or kick"
+    },
+    {
+      "player": "#11 (Shooting Guard)",
+      "setsRunForThisPlayer": [
+        { "set": "Pin Down", "frequency": 22, "ppp": 1.08 },
+        { "set": "Floppy", "frequency": 15, "ppp": 1.12 }
+      ],
+      "totalTouches": "Catch and shoot specialist",
+      "mostEffectiveAction": "Coming off stagger screens"
+    }
+  ],
+
+  "paceAnalysis": {
+    "possessionsObserved": 45,
+    "videoLengthMinutes": 20,
+    "possessionsPer40Minutes": 90,
+    "estimatedPossessionsPerGame": 68,
+    "paceCategory": "moderate",
+    "paceRating": 72,
+    "averagePossessionLength": "16.5 seconds",
+    "shotClockBreakdown": {
+      "early0to10": { "percentage": 22, "ppp": 1.35 },
+      "middle10to20": { "percentage": 48, "ppp": 1.02 },
+      "late20plus": { "percentage": 30, "ppp": 0.78 }
+    },
+    "tempoNotes": "Push in transition but patient in half-court"
+  },
+
+  "ballMovementMetrics": {
+    "totalBallReversals": 67,
+    "reversalsPerPossession": 1.8,
+    "reversalImpact": "Shots after reversal: 48% vs 34% without",
+    "passesPerPossession": 4.2,
+    "skipPassFrequency": "12 skip passes observed",
+    "touchDistribution": {
+      "description": "Average 3.8 players touch ball per possession",
+      "ballDominantPlayers": ["#23 - 42% of touches", "#11 - 18% of touches"]
+    },
+    "stagnationWarning": "Ball sticks with #23 when play breaks down"
+  },
+
+  "turnoverToScoreAnalysis": {
+    "opponentTurnoversObserved": 8,
+    "turnoversConvertedToScores": 6,
+    "turnoverConversionRate": 75,
+    "averagePointsPerConversion": 1.67,
+    "conversionBreakdown": {
+      "liveBallTurnovers": {
+        "count": 5,
+        "convertedToScore": 5,
+        "conversionRate": 100,
+        "averageTimeToScore": "4.2 seconds"
+      },
+      "deadBallTurnovers": {
+        "count": 3,
+        "convertedToScore": 1,
+        "conversionRate": 33,
+        "averageTimeToScore": "12.5 seconds"
+      }
+    },
+    "transitionAfterTurnover": "Excellent - push hard after steals",
+    "keyInsight": "Force dead ball turnovers, don't gamble for steals"
   },
 
   "defense": {
@@ -1034,10 +1486,87 @@ function generateReport(analysis, opponentName, frameCount, videoInfo) {
         videoDuration: videoInfo?.duration ? Math.round(videoInfo.duration) : null,
         skillLevel: analysis?.skillLevel || { estimated: 'unknown' },
         confidence: analysis?.confidence?.overall || 75,
+        
+        // Core Analysis
         defense: analysis?.defense || { primary: { scheme: 'Unknown' } },
         offense: analysis?.offense || { primary: { system: 'Unknown' } },
         keyPlayers: analysis?.keyPlayers || [],
         pace: analysis?.pace || { rating: 50 },
+        
+        // Enhanced Analytics
+        paceAndTempo: analysis?.paceAndTempo || {
+            possessionsPerGameEstimate: null,
+            paceRating: null,
+            paceCategory: 'unknown',
+            shotClockUsage: {},
+            transitionFrequency: {}
+        },
+        
+        offensiveSetEfficiency: analysis?.offensiveSetEfficiency || {
+            setBreakdown: [],
+            mostEfficientSet: null,
+            leastEfficientSet: null
+        },
+        
+        playerSpecificSets: analysis?.playerSpecificSets || [],
+        
+        ballMovementAnalytics: analysis?.ballMovementAnalytics || {
+            reversalsPerPossession: null,
+            passesBeforeShot: null,
+            ballMovementRating: 'unknown'
+        },
+        
+        turnoverAnalysis: analysis?.turnoverAnalysis || {
+            estimatedTurnoverRate: null,
+            turnoverConversion: {},
+            highTurnoverSituations: []
+        },
+        
+        teamValueIdentification: analysis?.teamValueIdentification || {
+            offensiveIdentity: {},
+            defensiveIdentity: {},
+            goToPlays: {},
+            mostValuableAspect: null
+        },
+        
+        // NEW: Detailed Set Tracking
+        offensiveSetTracking: analysis?.offensiveSetTracking || {
+            totalPossessionsObserved: null,
+            setBySetBreakdown: [],
+            mostRunSet: null,
+            mostEfficientSet: null,
+            leastEfficientSet: null
+        },
+        
+        // NEW: Player-Set Assignments
+        playerSetAssignments: analysis?.playerSetAssignments || [],
+        
+        // NEW: Pace Analysis
+        paceAnalysis: analysis?.paceAnalysis || {
+            possessionsObserved: null,
+            estimatedPossessionsPerGame: null,
+            paceCategory: 'unknown',
+            averagePossessionLength: null,
+            shotClockBreakdown: {}
+        },
+        
+        // NEW: Ball Movement Metrics
+        ballMovementMetrics: analysis?.ballMovementMetrics || {
+            totalBallReversals: null,
+            reversalsPerPossession: null,
+            passesPerPossession: null,
+            touchDistribution: {}
+        },
+        
+        // NEW: Turnover-to-Score Analysis
+        turnoverToScoreAnalysis: analysis?.turnoverToScoreAnalysis || {
+            opponentTurnoversObserved: null,
+            turnoversConvertedToScores: null,
+            turnoverConversionRate: null,
+            conversionBreakdown: {}
+        },
+        
+        // Existing fields
         specialSituations: analysis?.specialSituations || {},
         teamStrengths: analysis?.teamStrengths || [],
         teamWeaknesses: analysis?.teamWeaknesses || [],
