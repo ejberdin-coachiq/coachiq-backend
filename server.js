@@ -383,7 +383,39 @@ IMPORTANT RULES:
 // ANALYSIS PROMPT BUILDER
 // ===========================================
 
-function buildAnalysisPrompt(opponentName, frameCount, analysisOptions) {
+function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo = null) {
+    // Build team identification section if teamInfo is provided
+    let teamIdentification = '';
+    if (teamInfo && teamInfo.opponent && teamInfo.yourTeam) {
+        teamIdentification = `
+## 🎽 CRITICAL: TEAM IDENTIFICATION
+
+**You MUST distinguish between the two teams using jersey colors:**
+
+| Team | Jersey Color | Role |
+|------|--------------|------|
+| **${teamInfo.opponent.name || opponentName}** | **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | ⚠️ **SCOUT THIS TEAM** - All analysis should focus on this team |
+| **${teamInfo.yourTeam.name || 'Opposing Team'}** | **${teamInfo.yourTeam.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | Ignore this team except to note how opponent defends them |
+
+**IMPORTANT INSTRUCTIONS:**
+- When analyzing OFFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's offensive sets, plays, and tendencies
+- When analyzing DEFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's defensive schemes and coverages
+- ONLY report on the team wearing **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** jerseys
+- In each frame, first identify which team has the ball by jersey color
+- Clearly label all observations with the jersey color for verification
+
+---
+`;
+    } else {
+        teamIdentification = `
+## ⚠️ TEAM IDENTIFICATION
+
+No specific jersey colors were provided. Try to consistently identify one team to analyze throughout all frames. Look for consistent jersey colors/uniforms and focus your scouting report on ONE team's offense and defense.
+
+---
+`;
+    }
+
     return `# COMPREHENSIVE SCOUTING ANALYSIS
 
 **Opponent:** ${opponentName}
@@ -391,16 +423,20 @@ function buildAnalysisPrompt(opponentName, frameCount, analysisOptions) {
 **Focus Areas:** ${analysisOptions.join(', ')}
 
 ---
-
+${teamIdentification}
 ## INSTRUCTIONS
 
-Analyze these game frames and identify EVERYTHING you can observe about this team's offensive and defensive schemes. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
+Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
+
+**Remember: ONLY analyze the team wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} jerseys.**
 
 Use the comprehensive basketball knowledge provided to identify specific schemes, sets, and actions.
 
 ---
 
 ## DEFENSIVE IDENTIFICATION CHECKLIST
+
+**Analyze the ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'OPPONENT'} jersey team's defense:**
 
 Look for and identify:
 
@@ -1214,7 +1250,7 @@ app.post('/api/upload/chunk', upload.single('chunk'), (req, res) => {
 });
 
 app.post('/api/upload/finalize', async (req, res) => {
-    const { uploadId, opponentName, analysisOptions, userEmail, userName } = req.body;
+    const { uploadId, opponentName, analysisOptions, userEmail, userName, teamInfo } = req.body;
     const session = uploadSessions.get(uploadId);
     if (!session) return res.status(404).json({ error: 'Session not found' });
     
@@ -1222,30 +1258,42 @@ app.post('/api/upload/finalize', async (req, res) => {
     reports.set(reportId, {
         id: reportId, userEmail, userName: userName || 'Coach', opponentName,
         fileName: session.fileName, status: 'queued', progress: 0,
-        progressText: 'Video received...', createdAt: new Date().toISOString()
+        progressText: 'Video received...', createdAt: new Date().toISOString(),
+        teamInfo: teamInfo || null
     });
     
     await sendConfirmationEmail(userEmail, userName, opponentName, reportId);
-    processVideoInBackground(reportId, uploadId, opponentName, analysisOptions || ['defense', 'offense', 'pace'], userEmail, userName);
+    processVideoInBackground(reportId, uploadId, opponentName, analysisOptions || ['defense', 'offense', 'pace'], userEmail, userName, teamInfo);
     
     res.json({ reportId, status: 'queued', message: 'Video received!' });
 });
 
 app.post('/api/upload/simple', upload.single('video'), async (req, res) => {
     try {
-        const { opponentName, analysisOptions, userEmail, userName } = req.body;
+        const { opponentName, analysisOptions, userEmail, userName, teamInfo } = req.body;
         if (!req.file) return res.status(400).json({ error: 'No video' });
+        
+        // Parse teamInfo if it's a string
+        let parsedTeamInfo = null;
+        if (teamInfo) {
+            try {
+                parsedTeamInfo = typeof teamInfo === 'string' ? JSON.parse(teamInfo) : teamInfo;
+            } catch (e) {
+                console.warn('Could not parse teamInfo:', e);
+            }
+        }
         
         const reportId = uuidv4();
         reports.set(reportId, {
             id: reportId, userEmail, userName: userName || 'Coach', opponentName,
             fileName: req.file.originalname, status: 'queued', progress: 0,
-            progressText: 'Video received...', createdAt: new Date().toISOString()
+            progressText: 'Video received...', createdAt: new Date().toISOString(),
+            teamInfo: parsedTeamInfo
         });
         
         await sendConfirmationEmail(userEmail, userName, opponentName, reportId);
         processSimpleUploadInBackground(reportId, req.file.path, opponentName,
-            analysisOptions ? JSON.parse(analysisOptions) : ['defense', 'offense', 'pace'], userEmail, userName);
+            analysisOptions ? JSON.parse(analysisOptions) : ['defense', 'offense', 'pace'], userEmail, userName, parsedTeamInfo);
         
         res.json({ reportId, status: 'queued', message: 'Video received!' });
     } catch (error) {
@@ -1304,7 +1352,7 @@ async function sendErrorEmail(email, name, opponentName, error) {
 // PROCESSING
 // ===========================================
 
-async function processVideoInBackground(reportId, uploadId, opponentName, analysisOptions, userEmail, userName) {
+async function processVideoInBackground(reportId, uploadId, opponentName, analysisOptions, userEmail, userName, teamInfo = null) {
     const session = uploadSessions.get(uploadId);
     const tempDir = `/tmp/coachiq_${reportId}`;
     
@@ -1317,7 +1365,7 @@ async function processVideoInBackground(reportId, uploadId, opponentName, analys
         fs.rmSync(session.chunksDir, { recursive: true, force: true });
         uploadSessions.delete(uploadId);
         
-        await processVideoFile(reportId, combinedPath, opponentName, analysisOptions, userEmail, userName, tempDir);
+        await processVideoFile(reportId, combinedPath, opponentName, analysisOptions, userEmail, userName, tempDir, teamInfo);
     } catch (error) {
         console.error('Error:', error);
         updateReport(reportId, { status: 'failed', error: error.message });
@@ -1326,13 +1374,13 @@ async function processVideoInBackground(reportId, uploadId, opponentName, analys
     }
 }
 
-async function processSimpleUploadInBackground(reportId, videoPath, opponentName, analysisOptions, userEmail, userName) {
+async function processSimpleUploadInBackground(reportId, videoPath, opponentName, analysisOptions, userEmail, userName, teamInfo = null) {
     const tempDir = `/tmp/coachiq_${reportId}`;
     try {
         fs.mkdirSync(tempDir, { recursive: true });
         const originalPath = path.join(tempDir, 'video.mp4');
         fs.renameSync(videoPath, originalPath);
-        await processVideoFile(reportId, originalPath, opponentName, analysisOptions, userEmail, userName, tempDir);
+        await processVideoFile(reportId, originalPath, opponentName, analysisOptions, userEmail, userName, tempDir, teamInfo);
     } catch (error) {
         console.error('Error:', error);
         updateReport(reportId, { status: 'failed', error: error.message });
@@ -1341,7 +1389,7 @@ async function processSimpleUploadInBackground(reportId, videoPath, opponentName
     }
 }
 
-async function processVideoFile(reportId, videoPath, opponentName, analysisOptions, userEmail, userName, tempDir) {
+async function processVideoFile(reportId, videoPath, opponentName, analysisOptions, userEmail, userName, tempDir, teamInfo = null) {
     try {
         const videoInfo = await getVideoInfo(videoPath);
         const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
@@ -1356,11 +1404,16 @@ async function processVideoFile(reportId, videoPath, opponentName, analysisOptio
         updateReport(reportId, { progress: 30, progressText: 'Extracting frames...' });
         const frames = await extractFrames(processedPath, tempDir);
         
+        // Log team info for debugging
+        if (teamInfo) {
+            console.log(`🎽 Team Info: Opponent(${teamInfo.opponent?.name})=${teamInfo.opponent?.jerseyColor}, YourTeam(${teamInfo.yourTeam?.name})=${teamInfo.yourTeam?.jerseyColor}`);
+        }
+        
         updateReport(reportId, { progress: 45, progressText: 'AI analyzing schemes...' });
-        const analysis = await analyzeWithClaude(frames, opponentName, analysisOptions);
+        const analysis = await analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo);
         
         updateReport(reportId, { progress: 80, progressText: 'Generating report...' });
-        const report = generateReport(analysis, opponentName, frames.length, videoInfo);
+        const report = generateReport(analysis, opponentName, frames.length, videoInfo, teamInfo);
         
         reports.set(reportId, {
             ...reports.get(reportId),
@@ -1380,7 +1433,7 @@ async function processVideoFile(reportId, videoPath, opponentName, analysisOptio
 // CLAUDE ANALYSIS
 // ===========================================
 
-async function analyzeWithClaude(frames, opponentName, analysisOptions) {
+async function analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo = null) {
     if (frames.length === 0) throw new Error('No frames');
 
     const imageContent = frames.map(f => ({
@@ -1388,9 +1441,12 @@ async function analyzeWithClaude(frames, opponentName, analysisOptions) {
         source: { type: 'base64', media_type: 'image/jpeg', data: f.base64 }
     }));
 
-    const prompt = buildAnalysisPrompt(opponentName, frames.length, analysisOptions);
+    const prompt = buildAnalysisPrompt(opponentName, frames.length, analysisOptions, teamInfo);
 
     console.log('🤖 Analyzing with comprehensive prompts...');
+    if (teamInfo) {
+        console.log(`   Team Info: Opponent=${teamInfo.opponent?.jerseyColor}, YourTeam=${teamInfo.yourTeam?.jerseyColor}`);
+    }
     
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
@@ -1478,7 +1534,7 @@ async function extractFrames(videoPath, outputDir) {
     });
 }
 
-function generateReport(analysis, opponentName, frameCount, videoInfo) {
+function generateReport(analysis, opponentName, frameCount, videoInfo, teamInfo = null) {
     return {
         opponent: opponentName,
         generatedAt: new Date().toISOString(),
@@ -1486,6 +1542,18 @@ function generateReport(analysis, opponentName, frameCount, videoInfo) {
         videoDuration: videoInfo?.duration ? Math.round(videoInfo.duration) : null,
         skillLevel: analysis?.skillLevel || { estimated: 'unknown' },
         confidence: analysis?.confidence?.overall || 75,
+        
+        // Team Identification Info
+        teamInfo: teamInfo ? {
+            opponent: {
+                name: teamInfo.opponent?.name || opponentName,
+                jerseyColor: teamInfo.opponent?.jerseyColor || 'unknown'
+            },
+            yourTeam: {
+                name: teamInfo.yourTeam?.name || 'Your Team',
+                jerseyColor: teamInfo.yourTeam?.jerseyColor || 'unknown'
+            }
+        } : null,
         
         // Core Analysis
         defense: analysis?.defense || { primary: { scheme: 'Unknown' } },
