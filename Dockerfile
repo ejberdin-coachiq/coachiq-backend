@@ -5,32 +5,24 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     python3 \
     python3-pip \
-    wget \
     curl \
-    && pip3 install --break-system-packages yt-dlp gdown \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Create app directory
+# Install yt-dlp for YouTube/Hudl downloads
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp
+
+# Install gdown for Google Drive downloads
+RUN pip3 install --break-system-packages gdown
+
 WORKDIR /app
 
-# Copy package files
 COPY package*.json ./
+RUN npm install
 
-# Install Node dependencies
-RUN npm ci --only=production
-
-# Copy source code
 COPY . .
 
-# Create temp directories
-RUN mkdir -p /tmp/coachiq_uploads /tmp/frames
-
-# Expose port
 EXPOSE 3001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3001/health || exit 1
-
-# Start server
-CMD ["node", "server.js"]
+CMD ["npm", "start"]
