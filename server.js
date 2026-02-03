@@ -1,20 +1,19 @@
 /**
- * CoachIQ Backend Server
+ * CoachIQ Backend Server - File Upload Version
  * 
- * Handles:
- * - Email inbound processing (SendGrid webhook)
- * - Video downloading (YouTube, Hudl, Google Drive)
- * - Frame extraction (ffmpeg)
- * - AI analysis (Claude)
+ * Features:
+ * - Large file uploads (up to 10GB)
+ * - Video compression
+ * - Frame extraction
+ * - Claude AI analysis
  * - PDF report generation
- * - Email delivery
+ * - User authentication
  */
 
 const express = require('express');
 const cors = require('cors');
+const multer = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
-const sgMail = require('@sendgrid/mail');
-const { simpleParser } = require('mailparser');
 const PDFDocument = require('pdfkit');
 const { exec } = require('child_process');
 const { promisify } = require('util');
@@ -23,28 +22,39 @@ const fsSync = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const { v4: uuidv4 } = require('uuid');
-const multer = require('multer');
+const bcrypt = require('bcryptjs');
 
 const execAsync = promisify(exec);
 
 // Initialize Express
 const app = express();
 
-// Middleware for different content types
+// CORS
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json());
 
-// Multer for form data (SendGrid webhook)
-const upload = multer();
+// Multer for file uploads (10GB max)
+const storage = multer.diskStorage({
+  destination: '/tmp/uploads',
+  filename: (req, file, cb) => {
+    cb(null, `${Date.now()}_${file.originalname}`);
+  }
+});
 
-// Initialize APIs
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 * 1024 } // 10GB
+});
+
+// Ensure upload directory exists
+fs.mkdir('/tmp/uploads', { recursive: true }).catch(() => {});
+
+// Initialize Anthropic
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// In-memory storage (use a database like Supabase for production)
-const reports = new Map();
+// In-memory storage (replace with Supabase in production)
 const users = new Map();
+const reports = new Map();
 
 // ============================================
 // HEALTH CHECK
@@ -53,273 +63,139 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    service: 'CoachIQ Backend',
-    version: '1.1.0'
+    service: 'CoachIQ Backend'
   });
 });
 
 app.get('/', (req, res) => {
   res.json({ 
     message: 'CoachIQ API Server',
-    endpoints: {
-      health: '/health',
-      emailInbound: '/api/email/inbound',
-      analyze: '/api/analyze',
-      reportStatus: '/api/reports/:id/status',
-      report: '/api/reports/:id'
-    }
+    version: '2.0.0'
   });
 });
 
 // ============================================
-// EMAIL INBOUND WEBHOOK (SendGrid)
+// AUTHENTICATION
 // ============================================
-app.post('/api/email/inbound', upload.none(), async (req, res) => {
-  console.log('📧 Received inbound email webhook');
-  console.log('Content-Type:', req.headers['content-type']);
-  
+app.post('/api/auth/signup', async (req, res) => {
   try {
-    let fromEmail, subject, body;
+    const { email, password } = req.body;
     
-    // Handle different content types from SendGrid
-    if (req.body.from || req.body.email) {
-      // Form data from SendGrid
-      fromEmail = req.body.from || '';
-      subject = req.body.subject || '';
-      body = req.body.text || req.body.html || req.body.email || '';
-      
-      // Extract email address if it contains name
-      const emailMatch = fromEmail.match(/<([^>]+)>/) || fromEmail.match(/([^\s<]+@[^\s>]+)/);
-      if (emailMatch) fromEmail = emailMatch[1];
-    } else if (Buffer.isBuffer(req.body)) {
-      // Raw MIME message
-      const parsed = await simpleParser(req.body);
-      fromEmail = parsed.from?.value?.[0]?.address || parsed.from?.text || '';
-      subject = parsed.subject || '';
-      body = parsed.text || parsed.html || '';
-    } else {
-      console.log('Request body keys:', Object.keys(req.body));
-      return res.status(200).json({ status: 'unknown_format' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password required' });
     }
     
-    console.log(`📧 From: ${fromEmail}`);
-    console.log(`📧 Subject: ${subject}`);
-    console.log(`📧 Body length: ${body.length} chars`);
-    console.log(`📧 Body preview: ${body.substring(0, 300)}...`);
-    
-    // Extract video URL from email body
-    const videoUrl = extractVideoUrl(body);
-    
-    if (!videoUrl) {
-      console.log('❌ No video URL found in email');
-      await sendEmail(fromEmail, '❌ CoachIQ: No Video Link Found', `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #FF6B35; padding: 20px; text-align: center;">
-            <h1 style="color: white; margin: 0;">🏀 CoachIQ</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #333;">No Video Link Found</h2>
-            <p style="color: #666;">We couldn't find a video link in your email.</p>
-            <p style="color: #666;">Please reply with a link from:</p>
-            <ul style="color: #666;">
-              <li><strong>Hudl</strong> - Use the "Download" feature, then forward the download email</li>
-              <li><strong>Google Drive</strong> - Upload video, share link</li>
-              <li><strong>YouTube</strong> - youtube.com/watch?v=...</li>
-            </ul>
-            <p style="color: #666;">Just paste the URL in your email body and we'll analyze it!</p>
-          </div>
-        </div>
-      `);
-      return res.status(200).json({ status: 'no_video_url' });
+    if (users.has(email)) {
+      return res.status(400).json({ error: 'User already exists' });
     }
     
-    console.log(`🔗 Found video URL: ${videoUrl}`);
-    console.log(`🔗 URL length: ${videoUrl.length}`);
+    const hashedPassword = await bcrypt.hash(password, 10);
     
-    // Create report
-    const reportId = uuidv4();
-    const opponentName = cleanOpponentName(subject);
-    
-    reports.set(reportId, {
-      id: reportId,
-      userEmail: fromEmail,
-      opponentName,
-      videoUrl,
-      videoSource: detectVideoSource(videoUrl),
-      status: 'queued',
+    const user = {
+      id: uuidv4(),
+      email,
+      password: hashedPassword,
+      subscription: 'free',
+      reportsRemaining: 3,
       createdAt: new Date().toISOString()
+    };
+    
+    users.set(email, user);
+    
+    res.json({ 
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        subscription: user.subscription,
+        reportsRemaining: user.reportsRemaining
+      } 
     });
-    
-    // Track user
-    if (!users.has(fromEmail)) {
-      users.set(fromEmail, { email: fromEmail, reportCount: 0, reports: [] });
-    }
-    const user = users.get(fromEmail);
-    user.reportCount++;
-    user.reports.push({ 
-      id: reportId, 
-      opponentName, 
-      status: 'queued', 
-      videoSource: detectVideoSource(videoUrl),
-      createdAt: new Date().toISOString() 
-    });
-    
-    // Send confirmation email
-    await sendEmail(fromEmail, `🏀 CoachIQ: Analyzing ${opponentName}`, `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <div style="background: #FF6B35; padding: 20px; text-align: center;">
-          <h1 style="color: white; margin: 0;">🏀 CoachIQ</h1>
-        </div>
-        <div style="padding: 30px; background: #f9f9f9;">
-          <h2 style="color: #333;">Analysis Started! 🎬</h2>
-          <p style="color: #666; font-size: 16px;">
-            We're analyzing the game film for <strong style="color: #FF6B35;">${opponentName}</strong>.
-          </p>
-          <div style="background: white; border-left: 4px solid #FF6B35; padding: 15px; margin: 20px 0;">
-            <p style="margin: 0; color: #666;">
-              ⏱️ <strong>Expected time:</strong> 10-20 minutes for full game analysis<br>
-              📧 We'll email you the PDF report when ready!
-            </p>
-          </div>
-          <p style="color: #999; font-size: 12px;">Report ID: ${reportId}</p>
-        </div>
-        <div style="background: #333; padding: 15px; text-align: center;">
-          <p style="color: #999; font-size: 12px; margin: 0;">CoachIQ - AI Basketball Scouting</p>
-        </div>
-      </div>
-    `);
-    
-    // Start async analysis (don't await - let it run in background)
-    processVideoAnalysis(reportId).catch(err => {
-      console.error('❌ Analysis error:', err);
-    });
-    
-    res.status(200).json({ status: 'processing', reportId });
     
   } catch (error) {
-    console.error('❌ Email webhook error:', error);
-    res.status(200).json({ status: 'error', message: error.message });
+    console.error('Signup error:', error);
+    res.status(500).json({ error: 'Signup failed' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    const user = users.get(email);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    res.json({ 
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        subscription: user.subscription,
+        reportsRemaining: user.reportsRemaining
+      } 
+    });
+    
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed' });
   }
 });
 
 // ============================================
-// DIRECT ANALYSIS ENDPOINT (Web Form)
+// FILE UPLOAD
 // ============================================
-app.post('/api/analyze', async (req, res) => {
+app.post('/api/upload', upload.single('video'), async (req, res) => {
+  console.log('📤 Received upload request');
+  
   try {
-    const { videoUrl, opponentName, opponentColor, yourTeamColor, userEmail } = req.body;
-    
-    if (!videoUrl) {
-      return res.status(400).json({ error: 'Video URL is required' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'No video file uploaded' });
     }
+    
+    const { opponentName, opponentColor, yourColor, userEmail } = req.body;
+    
+    console.log(`📤 File: ${req.file.originalname} (${formatFileSize(req.file.size)})`);
+    console.log(`📤 Opponent: ${opponentName}`);
     
     const reportId = uuidv4();
     
-    reports.set(reportId, {
+    const report = {
       id: reportId,
-      userEmail: userEmail || null,
+      userEmail,
       opponentName: opponentName || 'Unknown Opponent',
-      opponentColor: opponentColor || 'black',
-      yourTeamColor: yourTeamColor || 'white',
-      videoUrl,
-      videoSource: detectVideoSource(videoUrl),
-      status: 'queued',
+      opponentColor: opponentColor || '#FF0000',
+      yourColor: yourColor || '#0000FF',
+      originalFile: req.file.path,
+      originalSize: req.file.size,
+      status: 'uploaded',
+      progress: 'Video uploaded',
       createdAt: new Date().toISOString()
-    });
+    };
     
-    // Track user
-    if (userEmail) {
-      if (!users.has(userEmail)) {
-        users.set(userEmail, { email: userEmail, reportCount: 0, subscription: 'free', reports: [] });
-      }
-      const user = users.get(userEmail);
-      user.reportCount++;
-      user.reports.push({ 
-        id: reportId, 
-        opponentName, 
-        status: 'queued',
-        videoSource: detectVideoSource(videoUrl),
-        createdAt: new Date().toISOString() 
-      });
-    }
+    reports.set(reportId, report);
     
-    // Start async analysis
-    processVideoAnalysis(reportId).catch(err => {
-      console.error('❌ Analysis error:', err);
+    // Start async processing
+    processVideo(reportId).catch(err => {
+      console.error('Processing error:', err);
     });
     
     res.json({ reportId, status: 'processing' });
     
   } catch (error) {
-    console.error('❌ Analyze error:', error);
+    console.error('Upload error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ============================================
-// GET REPORT STATUS
+// VIDEO PROCESSING
 // ============================================
-app.get('/api/reports/:id/status', (req, res) => {
-  const report = reports.get(req.params.id);
-  if (!report) {
-    return res.status(404).json({ error: 'Report not found' });
-  }
-  res.json({
-    status: report.status,
-    progress: report.progress || 'Processing...',
-    error: report.error
-  });
-});
-
-// ============================================
-// GET FULL REPORT
-// ============================================
-app.get('/api/reports/:id', (req, res) => {
-  const report = reports.get(req.params.id);
-  if (!report) {
-    return res.status(404).json({ error: 'Report not found' });
-  }
-  
-  // Don't send the full PDF in JSON
-  const { pdfBase64, ...reportData } = report;
-  res.json(reportData);
-});
-
-// ============================================
-// GET USER DATA (for dashboard)
-// ============================================
-app.get('/api/users/:email', (req, res) => {
-  const email = decodeURIComponent(req.params.email);
-  const user = users.get(email);
-  
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-  
-  // Get full report data for each report
-  const reportsWithData = user.reports.map(r => {
-    const fullReport = reports.get(r.id);
-    return {
-      id: r.id,
-      opponentName: fullReport?.opponentName || r.opponentName,
-      status: fullReport?.status || r.status,
-      videoSource: fullReport?.videoSource || r.videoSource,
-      createdAt: fullReport?.createdAt || r.createdAt
-    };
-  });
-  
-  res.json({
-    email: user.email,
-    reportCount: user.reportCount,
-    subscription: user.subscription || 'free',
-    reports: reportsWithData
-  });
-});
-
-// ============================================
-// VIDEO ANALYSIS PIPELINE
-// ============================================
-async function processVideoAnalysis(reportId) {
+async function processVideo(reportId) {
   const report = reports.get(reportId);
   if (!report) return;
   
@@ -328,89 +204,43 @@ async function processVideoAnalysis(reportId) {
   try {
     await fs.mkdir(tempDir, { recursive: true });
     
-    // Step 1: Download video
-    updateReport(reportId, 'downloading', '📥 Downloading video (this may take a few minutes for large files)...');
-    const videoPath = await downloadVideo(report.videoUrl, tempDir);
+    // Step 1: Compress
+    updateReport(reportId, 'compressing', '🗜️ Compressing video...');
+    const compressedPath = await compressVideo(report.originalFile, tempDir);
     
-    // Step 2: Extract frames from ENTIRE video
-    updateReport(reportId, 'extracting', '🎞️ Extracting key frames from full game...');
-    const frames = await extractFrames(videoPath, tempDir);
+    // Step 2: Extract frames
+    updateReport(reportId, 'extracting', '🎞️ Extracting frames...');
+    const frames = await extractFrames(compressedPath, tempDir);
     
-    // Step 3: Analyze with Claude
-    updateReport(reportId, 'analyzing', '🤖 AI analyzing game film...');
-    const analysis = await analyzeWithClaude(frames, report.opponentName);
+    // Step 3: Analyze
+    updateReport(reportId, 'analyzing', '🤖 AI analyzing...');
+    const analysis = await analyzeWithClaude(frames, report.opponentName, report.opponentColor, report.yourColor);
     
-    // Step 4: Generate report
-    updateReport(reportId, 'generating', '📄 Generating scouting report...');
+    // Step 4: Generate PDF
+    updateReport(reportId, 'generating', '📄 Generating report...');
     report.analysis = analysis;
-    
-    // Step 5: Generate PDF
     const pdfPath = await generatePDF(report, tempDir);
     const pdfBuffer = await fs.readFile(pdfPath);
     report.pdfBase64 = pdfBuffer.toString('base64');
     
-    // Step 6: Send email with PDF
-    if (report.userEmail) {
-      await sendReportEmail(report.userEmail, report.opponentName, pdfBuffer);
-    }
-    
-    // Mark complete
     report.status = 'complete';
     report.progress = '✅ Report ready!';
     report.completedAt = new Date().toISOString();
     
-    // Update user's report status
-    if (report.userEmail && users.has(report.userEmail)) {
-      const user = users.get(report.userEmail);
-      const userReport = user.reports.find(r => r.id === reportId);
-      if (userReport) userReport.status = 'complete';
-    }
-    
     console.log(`✅ Report complete: ${reportId}`);
     
   } catch (error) {
-    console.error(`❌ Analysis failed for ${reportId}:`, error);
+    console.error(`❌ Failed ${reportId}:`, error);
     report.status = 'failed';
     report.error = error.message;
-    report.progress = '❌ Analysis failed';
     
-    // Update user's report status
-    if (report.userEmail && users.has(report.userEmail)) {
-      const user = users.get(report.userEmail);
-      const userReport = user.reports.find(r => r.id === reportId);
-      if (userReport) userReport.status = 'failed';
-    }
-    
-    // Notify user of failure
-    if (report.userEmail) {
-      await sendEmail(report.userEmail, '❌ CoachIQ: Analysis Failed', `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: #FF6B35; padding: 20px; text-align: center;">
-            <h1 style="color: white; margin: 0;">🏀 CoachIQ</h1>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #d32f2f;">Analysis Failed</h2>
-            <p style="color: #666;">We encountered an error analyzing the video for <strong>${report.opponentName}</strong>.</p>
-            <div style="background: #ffebee; border-left: 4px solid #d32f2f; padding: 15px; margin: 20px 0;">
-              <p style="margin: 0; color: #666;"><strong>Error:</strong> ${error.message}</p>
-            </div>
-            <p style="color: #666;">Please try again with:</p>
-            <ul style="color: #666;">
-              <li>Forward the Hudl download notification email directly to us</li>
-              <li>Or upload the video to Google Drive and share the link</li>
-              <li>Make sure the video is publicly accessible</li>
-            </ul>
-          </div>
-        </div>
-      `);
-    }
   } finally {
-    // Cleanup temp files
     try {
       await fs.rm(tempDir, { recursive: true, force: true });
-    } catch (e) {
-      console.log('Cleanup warning:', e.message);
-    }
+      if (report.originalFile) {
+        await fs.unlink(report.originalFile).catch(() => {});
+      }
+    } catch (e) {}
   }
 }
 
@@ -419,210 +249,60 @@ function updateReport(reportId, status, progress) {
   if (report) {
     report.status = status;
     report.progress = progress;
-    console.log(`📊 [${reportId.slice(0,8)}] ${progress}`);
+    console.log(`📊 [${reportId.slice(0, 8)}] ${progress}`);
   }
 }
 
 // ============================================
-// VIDEO DOWNLOAD
+// VIDEO COMPRESSION
 // ============================================
-async function downloadVideo(url, tempDir) {
-  const outputPath = path.join(tempDir, 'video.mp4');
-  const source = detectVideoSource(url);
+async function compressVideo(inputPath, tempDir) {
+  const outputPath = path.join(tempDir, 'compressed.mp4');
+  const stats = await fs.stat(inputPath);
+  const sizeMB = stats.size / 1024 / 1024;
   
-  console.log(`📥 Source detected: ${source}`);
-  console.log(`📥 Full URL: ${url}`);
+  console.log(`📦 Original: ${formatFileSize(stats.size)}`);
   
-  try {
-    if (source === 'youtube') {
-      console.log('📥 Downloading from YouTube...');
-      await execAsync(
-        `yt-dlp -f "best[height<=720][ext=mp4]/best[height<=720]/best" --no-playlist -o "${outputPath}" "${url}"`,
-        { timeout: 600000 }
-      );
-      
-    } else if (source === 'google_drive') {
-      console.log('📥 Downloading from Google Drive...');
-      const fileId = extractGoogleDriveId(url);
-      if (!fileId) throw new Error('Could not extract Google Drive file ID');
-      await execAsync(
-        `gdown --id ${fileId} -O "${outputPath}"`,
-        { timeout: 1800000 } // 30 min timeout for large files
-      );
-      
-    } else if (source === 'hudl' || source === 'hudl_direct') {
-      // Check if it's a Hudl download link with direct MP4 URL
-      const directUrl = extractHudlDirectUrl(url);
-      
-      if (directUrl) {
-        console.log(`📥 Found direct Hudl MP4 URL!`);
-        console.log(`📥 Direct URL: ${directUrl}`);
-        // Download the full video with curl
-        await execAsync(
-          `curl -L -o "${outputPath}" "${directUrl}"`,
-          { timeout: 3600000 } // 60 min timeout for large files
-        );
-      } else {
-        console.log('📥 No direct URL found, trying yt-dlp...');
-        try {
-          await execAsync(
-            `yt-dlp -f "best[height<=720]" -o "${outputPath}" "${url}"`,
-            { timeout: 600000 }
-          );
-        } catch (e) {
-          throw new Error('Hudl video could not be downloaded. Please forward the Hudl download notification email directly to us, or upload the video to Google Drive.');
-        }
-      }
-      
-    } else if (source === 'direct_mp4') {
-      console.log(`📥 Downloading direct MP4 URL...`);
-      await execAsync(
-        `curl -L -o "${outputPath}" "${url}"`,
-        { timeout: 3600000 }
-      );
-      
-    } else {
-      console.log('📥 Trying generic download with yt-dlp...');
-      await execAsync(
-        `yt-dlp -f "best[height<=720]" -o "${outputPath}" "${url}"`,
-        { timeout: 600000 }
-      );
-    }
-    
-    // Verify file exists and has content
-    const stats = await fs.stat(outputPath);
-    if (stats.size < 1000) {
-      throw new Error('Downloaded file is too small - may be invalid');
-    }
-    
-    const sizeMB = stats.size / 1024 / 1024;
-    const sizeGB = sizeMB / 1024;
-    console.log(`✅ Downloaded: ${sizeGB > 1 ? sizeGB.toFixed(2) + ' GB' : sizeMB.toFixed(1) + ' MB'}`);
-    
+  if (sizeMB > 500) {
+    console.log('🗜️ Compressing...');
+    await execAsync(
+      `ffmpeg -i "${inputPath}" -vf "scale=-2:720" -c:v libx264 -preset fast -crf 28 -c:a aac -b:a 128k "${outputPath}"`,
+      { timeout: 3600000 }
+    );
+    const newStats = await fs.stat(outputPath);
+    console.log(`✅ Compressed to: ${formatFileSize(newStats.size)}`);
     return outputPath;
-    
-  } catch (error) {
-    console.error('Download error:', error.message);
-    throw new Error(`Failed to download video: ${error.message}`);
-  }
-}
-
-/**
- * Extract direct MP4 URL from Hudl download/notification links
- */
-function extractHudlDirectUrl(url) {
-  console.log('🔍 Checking for Hudl direct URL...');
-  
-  try {
-    // Method 1: Check for 'forward' parameter in URL
-    if (url.includes('forward=')) {
-      const forwardMatch = url.match(/forward=([^&\s]+)/);
-      if (forwardMatch) {
-        const decoded = decodeURIComponent(forwardMatch[1]);
-        console.log(`🔍 Found forward param: ${decoded.substring(0, 100)}...`);
-        if (decoded.includes('.mp4') || decoded.includes('vtemp.hudl.com')) {
-          return decoded;
-        }
-      }
-    }
-    
-    // Method 2: Use URL parser
-    try {
-      const urlObj = new URL(url);
-      const forwardParam = urlObj.searchParams.get('forward');
-      if (forwardParam) {
-        const decodedUrl = decodeURIComponent(forwardParam);
-        console.log(`🔍 Parsed forward param: ${decodedUrl.substring(0, 100)}...`);
-        if (decodedUrl.includes('.mp4') || decodedUrl.includes('vtemp.hudl.com')) {
-          return decodedUrl;
-        }
-      }
-    } catch (e) {
-      console.log('URL parsing failed, trying regex...');
-    }
-    
-    // Method 3: Check if URL itself contains vtemp
-    if (url.includes('vtemp.hudl.com')) {
-      const vtempMatch = url.match(/(https?:\/\/vtemp\.hudl\.com[^\s<>"]*\.mp4[^\s<>"]*)/);
-      if (vtempMatch) {
-        return vtempMatch[1];
-      }
-    }
-    
-    // Method 4: Look for any .mp4 URL in the string
-    const mp4Match = url.match(/(https?:\/\/[^\s<>"]*\.mp4[^\s<>"]*)/);
-    if (mp4Match) {
-      console.log(`🔍 Found MP4 URL: ${mp4Match[1].substring(0, 100)}...`);
-      return mp4Match[1];
-    }
-    
-  } catch (e) {
-    console.log('Could not extract Hudl URL:', e.message);
   }
   
-  return null;
-}
-
-function detectVideoSource(url) {
-  if (!url) return 'unknown';
-  
-  if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
-  if (url.includes('drive.google.com')) return 'google_drive';
-  if (url.includes('vtemp.hudl.com')) return 'hudl_direct';
-  if (url.includes('hudl.com')) return 'hudl';
-  if (url.includes('vimeo.com')) return 'vimeo';
-  if (url.includes('.mp4')) return 'direct_mp4';
-  return 'unknown';
-}
-
-function extractGoogleDriveId(url) {
-  const patterns = [
-    /\/file\/d\/([a-zA-Z0-9_-]+)/,
-    /id=([a-zA-Z0-9_-]+)/,
-    /\/d\/([a-zA-Z0-9_-]+)/,
-    /open\?id=([a-zA-Z0-9_-]+)/
-  ];
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
-  }
-  return null;
+  await fs.copyFile(inputPath, outputPath);
+  return outputPath;
 }
 
 // ============================================
-// FRAME EXTRACTION - SAMPLES ENTIRE VIDEO
+// FRAME EXTRACTION
 // ============================================
 async function extractFrames(videoPath, tempDir) {
   const framesDir = path.join(tempDir, 'frames');
   await fs.mkdir(framesDir, { recursive: true });
   
-  // Get video duration
-  let duration = 600; // default 10 minutes
+  let duration = 600;
   try {
     const { stdout } = await execAsync(
       `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
     );
     duration = parseFloat(stdout) || 600;
-  } catch (e) {
-    console.log('Could not get duration, using default');
-  }
+  } catch (e) {}
   
-  // Calculate frame interval to sample ENTIRE video
-  // Aim for 35-40 frames spread across the full game
   const targetFrames = 40;
   const interval = Math.max(10, Math.floor(duration / targetFrames));
   
-  const durationMin = Math.round(duration / 60);
-  console.log(`🎞️ Video duration: ${durationMin} minutes`);
-  console.log(`🎞️ Extracting 1 frame every ${interval} seconds (${targetFrames} frames total)`);
+  console.log(`🎞️ Duration: ${Math.round(duration / 60)} min, extracting every ${interval}s`);
   
-  // Extract frames spread across entire video
   await execAsync(
     `ffmpeg -i "${videoPath}" -vf "fps=1/${interval}" -frames:v ${targetFrames} -q:v 2 "${framesDir}/frame_%03d.jpg"`,
-    { timeout: 300000 } // 5 min timeout for extraction
+    { timeout: 300000 }
   );
   
-  // Read and resize frames
   const files = await fs.readdir(framesDir);
   const frames = [];
   
@@ -635,65 +315,54 @@ async function extractFrames(videoPath, tempDir) {
       .jpeg({ quality: 80 })
       .toBuffer();
     
-    // Calculate timestamp for this frame
     const frameNum = parseInt(file.match(/(\d+)/)[1]);
     const timestamp = (frameNum - 1) * interval;
-    const minutes = Math.floor(timestamp / 60);
-    const seconds = timestamp % 60;
     
     frames.push({
       filename: file,
-      timestamp: `${minutes}:${seconds.toString().padStart(2, '0')}`,
+      timestamp: `${Math.floor(timestamp / 60)}:${(timestamp % 60).toString().padStart(2, '0')}`,
       base64: resized.toString('base64')
     });
   }
   
-  console.log(`✅ Extracted ${frames.length} frames spanning entire ${durationMin}-minute video`);
+  console.log(`✅ Extracted ${frames.length} frames`);
   return frames;
 }
 
 // ============================================
 // CLAUDE AI ANALYSIS
 // ============================================
-async function analyzeWithClaude(frames, opponentName) {
+async function analyzeWithClaude(frames, opponentName, opponentColor, yourColor) {
   const batchSize = 8;
   const allResults = [];
   
-  console.log(`🤖 Analyzing ${frames.length} frames in batches of ${batchSize}...`);
+  console.log(`🤖 Analyzing ${frames.length} frames...`);
   
   for (let i = 0; i < frames.length; i += batchSize) {
     const batch = frames.slice(i, i + batchSize);
     const batchNum = Math.floor(i / batchSize) + 1;
-    const totalBatches = Math.ceil(frames.length / batchSize);
     
-    console.log(`🤖 Processing batch ${batchNum}/${totalBatches}...`);
+    console.log(`🤖 Batch ${batchNum}/${Math.ceil(frames.length / batchSize)}...`);
     
     const content = [
       {
         type: 'text',
         text: `You are an expert basketball scout analyzing game film of "${opponentName}".
+The opponent wears ${opponentColor} jerseys. Focus on that team.
 
-These frames are from different points throughout the game (timestamps: ${batch.map(f => f.timestamp).join(', ')}).
+Timestamps: ${batch.map(f => f.timestamp).join(', ')}
 
-For EACH frame, identify:
-1. Defensive formation (man-to-man, 2-3 zone, 3-2 zone, 1-3-1 zone, 1-2-2 press, full court press, match-up zone, etc.)
-2. Offensive play/action (pick and roll, motion, horns, flex, isolation, fast break, post-up, dribble drive, etc.)
-3. Ball handler jersey number if visible
-4. Any shot attempt and location (paint, mid-range, 3-pointer, corner 3)
-5. Pace (transition/fast break or half-court set)
+For EACH frame identify:
+1. Defense (man-to-man, 2-3 zone, 3-2 zone, 1-3-1, press, etc.)
+2. Offense (pick and roll, motion, horns, flex, isolation, fast break, etc.)
+3. Ball handler jersey #
+4. Shot location if any
+5. Pace (transition or half-court)
 
-Return ONLY valid JSON in this exact format:
+Return ONLY JSON:
 {
   "frames": [
-    {
-      "timestamp": "0:00",
-      "defense": "man-to-man",
-      "offense": "pick and roll",
-      "ballHandler": "#23",
-      "shot": {"location": "paint", "type": "layup"},
-      "pace": "half-court",
-      "notes": "double team on post"
-    }
+    {"defense": "man-to-man", "offense": "pick and roll", "ballHandler": "#23", "shot": null, "pace": "half-court"}
   ]
 }`
       },
@@ -715,7 +384,6 @@ Return ONLY valid JSON in this exact format:
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         if (parsed.frames) {
-          // Add timestamps from our frames
           parsed.frames.forEach((f, idx) => {
             if (batch[idx]) f.timestamp = batch[idx].timestamp;
           });
@@ -726,61 +394,34 @@ Return ONLY valid JSON in this exact format:
       console.error(`Batch ${batchNum} error:`, e.message);
     }
     
-    // Rate limiting pause
     if (i + batchSize < frames.length) {
       await new Promise(r => setTimeout(r, 1000));
     }
   }
   
-  console.log(`✅ Analyzed ${allResults.length} frames total`);
-  
-  // Generate summary report
-  return generateAnalysisSummary(allResults, opponentName);
+  console.log(`✅ Analyzed ${allResults.length} frames`);
+  return generateSummary(allResults, opponentName);
 }
 
-function generateAnalysisSummary(frameResults, opponentName) {
-  // Count occurrences
+function generateSummary(frameResults, opponentName) {
   const defenseCounts = {};
   const offenseCounts = {};
   const playerCounts = {};
-  const shotLocations = {};
   const paceCounts = { transition: 0, 'half-court': 0 };
   
   frameResults.forEach(f => {
-    if (f.defense) {
-      const def = f.defense.toLowerCase();
-      defenseCounts[def] = (defenseCounts[def] || 0) + 1;
-    }
-    if (f.offense) {
-      const off = f.offense.toLowerCase();
-      offenseCounts[off] = (offenseCounts[off] || 0) + 1;
-    }
-    if (f.ballHandler) {
-      playerCounts[f.ballHandler] = (playerCounts[f.ballHandler] || 0) + 1;
-    }
-    if (f.shot?.location) {
-      shotLocations[f.shot.location] = (shotLocations[f.shot.location] || 0) + 1;
-    }
-    if (f.pace === 'transition' || f.pace === 'fast break') {
-      paceCounts.transition++;
-    } else {
-      paceCounts['half-court']++;
-    }
+    if (f.defense) defenseCounts[f.defense.toLowerCase()] = (defenseCounts[f.defense.toLowerCase()] || 0) + 1;
+    if (f.offense) offenseCounts[f.offense.toLowerCase()] = (offenseCounts[f.offense.toLowerCase()] || 0) + 1;
+    if (f.ballHandler) playerCounts[f.ballHandler] = (playerCounts[f.ballHandler] || 0) + 1;
+    if (f.pace === 'transition' || f.pace === 'fast break') paceCounts.transition++;
+    else paceCounts['half-court']++;
   });
   
   const total = frameResults.length || 1;
   
-  // Sort and get top items
   const sortedDefense = Object.entries(defenseCounts).sort((a, b) => b[1] - a[1]);
   const sortedOffense = Object.entries(offenseCounts).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const sortedPlayers = Object.entries(playerCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const sortedShots = Object.entries(shotLocations).sort((a, b) => b[1] - a[1]);
-  
-  // Calculate percentages
-  const primaryDefense = sortedDefense[0]?.[0] || 'man-to-man';
-  const primaryDefensePct = sortedDefense[0] ? Math.round((sortedDefense[0][1] / total) * 100) : 0;
-  const secondaryDefense = sortedDefense[1]?.[0] || null;
-  const secondaryDefensePct = sortedDefense[1] ? Math.round((sortedDefense[1][1] / total) * 100) : 0;
   
   const transitionPct = Math.round((paceCounts.transition / total) * 100);
   
@@ -790,10 +431,10 @@ function generateAnalysisSummary(frameResults, opponentName) {
     generatedAt: new Date().toISOString(),
     
     defense: {
-      primary: primaryDefense,
-      primaryPct: primaryDefensePct,
-      secondary: secondaryDefense,
-      secondaryPct: secondaryDefensePct,
+      primary: sortedDefense[0]?.[0] || 'man-to-man',
+      primaryPct: sortedDefense[0] ? Math.round((sortedDefense[0][1] / total) * 100) : 0,
+      secondary: sortedDefense[1]?.[0] || null,
+      secondaryPct: sortedDefense[1] ? Math.round((sortedDefense[1][1] / total) * 100) : 0,
       all: sortedDefense.map(([name, count]) => ({
         name: name.charAt(0).toUpperCase() + name.slice(1),
         percentage: Math.round((count / total) * 100)
@@ -813,64 +454,31 @@ function generateAnalysisSummary(frameResults, opponentName) {
       role: idx === 0 ? 'Primary Ball Handler' : 'Secondary Handler'
     })),
     
-    shotChart: sortedShots.map(([location, count]) => ({
-      location,
-      count,
-      percentage: Math.round((count / total) * 100)
-    })),
-    
     pace: {
       transitionPct,
       halfCourtPct: 100 - transitionPct,
       rating: Math.round(50 + transitionPct * 0.5),
-      description: transitionPct > 30 ? 'Up-tempo' : transitionPct > 15 ? 'Moderate' : 'Slow/Half-court'
+      description: transitionPct > 30 ? 'Up-tempo' : transitionPct > 15 ? 'Moderate' : 'Half-court'
     },
     
-    recommendations: generateRecommendations(primaryDefense, secondaryDefense, sortedOffense, sortedPlayers, transitionPct)
+    recommendations: {
+      offensive: [
+        sortedDefense[0]?.[0]?.includes('zone') ? 'Attack zone gaps' : 'Use screens for mismatches',
+        'Push pace in transition',
+        'Look for pick and roll opportunities'
+      ],
+      defensive: [
+        sortedPlayers[0] ? `Key assignment: ${sortedPlayers[0][0]}` : 'Identify primary scorer',
+        'Contest all shots',
+        'Force weak hand'
+      ],
+      practice: [
+        'Transition offense drills',
+        sortedDefense[0]?.[0]?.includes('zone') ? 'Zone offense sets' : 'Screen continuity',
+        'Defensive communication'
+      ]
+    }
   };
-}
-
-function generateRecommendations(primaryDef, secondaryDef, topPlays, topPlayers, transitionPct) {
-  const offensive = [];
-  const defensive = [];
-  const practice = [];
-  
-  // Offensive recommendations (against their defense)
-  if (primaryDef.includes('zone')) {
-    offensive.push('Attack the gaps in their zone defense');
-    offensive.push('Use ball movement to shift the zone');
-    offensive.push('Look for high-low action against the zone');
-    practice.push('Zone offense sets - attack the middle');
-  } else {
-    offensive.push('Use screens to create mismatches');
-    offensive.push('Look for pick and roll opportunities');
-    offensive.push('Attack closeouts after ball reversal');
-    practice.push('Screen and roll continuity');
-  }
-  
-  if (secondaryDef) {
-    offensive.push(`Be ready for ${secondaryDef} as secondary look`);
-  }
-  
-  if (transitionPct < 20) {
-    offensive.push('Push pace - they prefer half-court defense');
-    practice.push('Transition offense drills');
-  }
-  
-  // Defensive recommendations (against their offense)
-  if (topPlays.length > 0) {
-    defensive.push(`Scout their top play: ${topPlays[0][0]}`);
-  }
-  
-  if (topPlayers.length > 0) {
-    defensive.push(`Key defensive assignment: ${topPlayers[0][0]}`);
-    practice.push(`Deny ball to ${topPlayers[0][0]} in crunch time`);
-  }
-  
-  defensive.push('Force them to their weak hand');
-  defensive.push('Contest all shots without fouling');
-  
-  return { offensive, defensive, practice };
 }
 
 // ============================================
@@ -881,358 +489,156 @@ async function generatePDF(report, tempDir) {
   const analysis = report.analysis;
   
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ 
-      size: 'LETTER', 
-      margin: 50,
-      bufferPages: true
-    });
-    
+    const doc = new PDFDocument({ size: 'LETTER', margin: 50, bufferPages: true });
     const stream = fsSync.createWriteStream(pdfPath);
     doc.pipe(stream);
     
-    // Colors
     const orange = '#FF6B35';
-    const dark = '#1a1a2e';
     const accent = '#00D4AA';
-    const gray = '#666666';
     
-    // === PAGE 1: Header and Overview ===
-    
-    // Header bar
+    // Header
     doc.rect(0, 0, 612, 100).fill(orange);
-    doc.fillColor('white')
-       .fontSize(36)
-       .font('Helvetica-Bold')
-       .text('SCOUTING REPORT', 50, 28);
-    doc.fontSize(20)
-       .font('Helvetica')
-       .text(analysis.opponent.toUpperCase(), 50, 68);
-    
-    // Date on right
-    doc.fontSize(10)
-       .text(`Generated: ${new Date().toLocaleDateString('en-US', { 
-         month: 'long', day: 'numeric', year: 'numeric' 
-       })}`, 400, 75, { align: 'right', width: 160 });
+    doc.fillColor('white').fontSize(36).font('Helvetica-Bold').text('SCOUTING REPORT', 50, 28);
+    doc.fontSize(20).font('Helvetica').text(analysis.opponent.toUpperCase(), 50, 68);
     
     let y = 120;
     
-    // Quick Stats Box
-    doc.rect(50, y, 512, 70).fill('#f5f5f5');
+    // Stats box
+    doc.rect(50, y, 512, 60).fill('#f5f5f5');
+    doc.fontSize(20).font('Helvetica-Bold').fillColor(orange).text(analysis.framesAnalyzed.toString(), 80, y + 15);
+    doc.fontSize(9).fillColor('#666').text('FRAMES', 80, y + 40);
+    doc.fontSize(20).fillColor(orange).text(analysis.pace.rating.toString(), 200, y + 15);
+    doc.fontSize(9).fillColor('#666').text('PACE', 200, y + 40);
+    doc.fontSize(20).fillColor(orange).text(`${analysis.pace.transitionPct}%`, 320, y + 15);
+    doc.fontSize(9).fillColor('#666').text('TRANSITION', 320, y + 40);
     
-    const stats = [
-      { label: 'FRAMES', value: analysis.framesAnalyzed.toString() },
-      { label: 'PACE', value: analysis.pace.rating.toString() },
-      { label: 'TRANSITION', value: `${analysis.pace.transitionPct}%` },
-      { label: 'TEMPO', value: analysis.pace.description }
-    ];
+    y += 80;
     
-    stats.forEach((stat, i) => {
-      const x = 70 + (i * 125);
-      doc.fontSize(24)
-         .font('Helvetica-Bold')
-         .fillColor(orange)
-         .text(stat.value, x, y + 15, { width: 110 });
-      doc.fontSize(9)
-         .font('Helvetica')
-         .fillColor(gray)
-         .text(stat.label, x, y + 45);
-    });
-    
-    y += 90;
-    
-    // === DEFENSIVE BREAKDOWN ===
-    doc.fillColor(orange).fontSize(18).font('Helvetica-Bold').text('DEFENSIVE BREAKDOWN', 50, y);
-    y += 30;
-    
-    doc.fillColor(dark).fontSize(14).font('Helvetica-Bold');
-    doc.text(`Primary: ${analysis.defense.primary}`, 50, y);
-    doc.fillColor(gray).fontSize(12).font('Helvetica');
-    doc.text(`${analysis.defense.primaryPct}% of possessions`, 250, y);
+    // Defense
+    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('DEFENSIVE BREAKDOWN', 50, y);
     y += 25;
-    
+    doc.fillColor('#333').fontSize(12).font('Helvetica').text(`Primary: ${analysis.defense.primary} (${analysis.defense.primaryPct}%)`, 50, y);
     if (analysis.defense.secondary) {
-      doc.fillColor(dark).fontSize(14).font('Helvetica-Bold');
-      doc.text(`Secondary: ${analysis.defense.secondary}`, 50, y);
-      doc.fillColor(gray).fontSize(12).font('Helvetica');
-      doc.text(`${analysis.defense.secondaryPct}% of possessions`, 250, y);
-      y += 25;
+      y += 20;
+      doc.text(`Secondary: ${analysis.defense.secondary} (${analysis.defense.secondaryPct}%)`, 50, y);
     }
     
-    // Defense bar chart
-    y += 10;
-    analysis.defense.all.slice(0, 4).forEach(d => {
-      doc.fontSize(11).fillColor(dark).text(d.name, 50, y, { width: 120 });
-      
-      // Bar background
-      doc.rect(180, y + 2, 280, 14).fill('#e0e0e0');
-      // Bar fill
-      doc.rect(180, y + 2, 280 * (d.percentage / 100), 14).fill(accent);
-      // Percentage
-      doc.fillColor(dark).text(`${d.percentage}%`, 470, y);
-      y += 24;
-    });
+    y += 40;
     
-    y += 20;
-    
-    // === TOP OFFENSIVE PLAYS ===
-    doc.fillColor(orange).fontSize(18).font('Helvetica-Bold').text('TOP OFFENSIVE PLAYS', 50, y);
-    y += 28;
-    
-    doc.fillColor(dark).fontSize(12).font('Helvetica');
+    // Offense
+    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('TOP OFFENSIVE PLAYS', 50, y);
+    y += 25;
     analysis.offense.topPlays.forEach((play, i) => {
-      doc.font('Helvetica-Bold').text(`${i + 1}. ${play.name}`, 50, y);
-      doc.font('Helvetica').fillColor(gray).text(`${play.percentage}%`, 300, y);
-      y += 22;
+      doc.fillColor('#333').fontSize(12).font('Helvetica').text(`${i + 1}. ${play.name} - ${play.percentage}%`, 50, y);
+      y += 20;
     });
     
     y += 20;
     
-    // === KEY PLAYERS ===
-    doc.fillColor(orange).fontSize(18).font('Helvetica-Bold').text('KEY PLAYERS TO WATCH', 50, y);
-    y += 28;
-    
+    // Players
+    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('KEY PLAYERS', 50, y);
+    y += 25;
     analysis.keyPlayers.forEach(player => {
-      doc.fillColor(dark).fontSize(13).font('Helvetica-Bold').text(player.jersey, 50, y);
-      doc.font('Helvetica').fillColor(gray).fontSize(11)
-         .text(`${player.role} • ${player.ballHandlingPct}% ball handling`, 100, y);
-      y += 22;
+      doc.fillColor('#333').fontSize(12).text(`${player.jersey} - ${player.role} (${player.ballHandlingPct}% ball handling)`, 50, y);
+      y += 20;
     });
     
-    // === PAGE 2: Recommendations ===
+    // Page 2 - Recommendations
     doc.addPage();
     y = 50;
     
-    // Game Plan Header
-    doc.rect(0, 0, 612, 60).fill(dark);
-    doc.fillColor('white').fontSize(24).font('Helvetica-Bold')
-       .text('GAME PLAN RECOMMENDATIONS', 50, 18);
+    doc.rect(0, 0, 612, 60).fill('#1a1a2e');
+    doc.fillColor('white').fontSize(24).font('Helvetica-Bold').text('GAME PLAN', 50, 18);
     
     y = 80;
     
-    // Offensive Keys
-    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold')
-       .text('OFFENSIVE KEYS', 50, y);
-    doc.fontSize(11).fillColor(gray).font('Helvetica')
-       .text('(Against their defense)', 200, y + 2);
-    y += 28;
-    
-    doc.fillColor(dark).fontSize(12).font('Helvetica');
+    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('OFFENSIVE KEYS', 50, y);
+    y += 25;
     analysis.recommendations.offensive.forEach(rec => {
-      doc.text(`•  ${rec}`, 60, y, { width: 480 });
-      y += 22;
+      doc.fillColor('#333').fontSize(12).font('Helvetica').text(`• ${rec}`, 60, y);
+      y += 20;
     });
     
     y += 20;
-    
-    // Defensive Keys
-    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold')
-       .text('DEFENSIVE KEYS', 50, y);
-    doc.fontSize(11).fillColor(gray).font('Helvetica')
-       .text('(Against their offense)', 200, y + 2);
-    y += 28;
-    
-    doc.fillColor(dark).fontSize(12).font('Helvetica');
+    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('DEFENSIVE KEYS', 50, y);
+    y += 25;
     analysis.recommendations.defensive.forEach(rec => {
-      doc.text(`•  ${rec}`, 60, y, { width: 480 });
-      y += 22;
+      doc.fillColor('#333').fontSize(12).font('Helvetica').text(`• ${rec}`, 60, y);
+      y += 20;
     });
     
     y += 20;
-    
-    // Practice Focus
-    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold')
-       .text('PRACTICE FOCUS', 50, y);
-    y += 28;
-    
-    doc.fillColor(dark).fontSize(12).font('Helvetica');
+    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('PRACTICE FOCUS', 50, y);
+    y += 25;
     analysis.recommendations.practice.forEach(rec => {
-      doc.text(`•  ${rec}`, 60, y, { width: 480 });
-      y += 22;
+      doc.fillColor('#333').fontSize(12).font('Helvetica').text(`• ${rec}`, 60, y);
+      y += 20;
     });
     
-    // Footer on both pages
+    // Footer
     const pages = doc.bufferedPageRange();
     for (let i = 0; i < pages.count; i++) {
       doc.switchToPage(i);
-      doc.fontSize(9).fillColor('#999999');
-      doc.text(
-        'Generated by CoachIQ - AI Basketball Scouting • meetyournewstatscoach.com',
-        50, 750, { width: 512, align: 'center' }
-      );
+      doc.fontSize(9).fillColor('#999').text('Generated by CoachIQ', 50, 750, { width: 512, align: 'center' });
     }
     
     doc.end();
-    
     stream.on('finish', () => resolve(pdfPath));
     stream.on('error', reject);
   });
 }
 
 // ============================================
-// EMAIL FUNCTIONS
+// API ENDPOINTS
 // ============================================
-async function sendEmail(to, subject, html) {
-  try {
-    const msg = {
-      to,
-      from: {
-        email: process.env.FROM_EMAIL || process.env.SCOUT_EMAIL || 'scout@meetyournewstatscoach.com',
-        name: 'CoachIQ'
-      },
-      subject,
-      html
-    };
-    
-    await sgMail.send(msg);
-    console.log(`📧 Email sent to ${to}: ${subject}`);
-  } catch (error) {
-    console.error('📧 Email send error:', error.message);
-    if (error.response) {
-      console.error('SendGrid response:', error.response.body);
-    }
-  }
-}
+app.get('/api/reports/:id/status', (req, res) => {
+  const report = reports.get(req.params.id);
+  if (!report) return res.status(404).json({ error: 'Report not found' });
+  res.json({ status: report.status, progress: report.progress, error: report.error });
+});
 
-async function sendReportEmail(to, opponentName, pdfBuffer) {
-  try {
-    const msg = {
-      to,
-      from: {
-        email: process.env.FROM_EMAIL || process.env.SCOUT_EMAIL || 'scout@meetyournewstatscoach.com',
-        name: 'CoachIQ'
-      },
-      subject: `🏀 Your Scouting Report: ${opponentName}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: linear-gradient(135deg, #FF6B35, #FF8E53); padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
-            <h1 style="color: white; margin: 0; font-size: 28px;">🏀 CoachIQ</h1>
-            <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">AI-Powered Scouting Reports</p>
-          </div>
-          <div style="padding: 30px; background: #f9f9f9;">
-            <h2 style="color: #333; margin-top: 0;">Your Scouting Report is Ready! 📋</h2>
-            <p style="color: #666; font-size: 16px; line-height: 1.6;">
-              We've completed the full-game analysis for <strong style="color: #FF6B35;">${opponentName}</strong>.
-            </p>
-            <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin: 20px 0;">
-              <h3 style="color: #FF6B35; margin-top: 0; font-size: 16px;">📎 PDF Report Attached</h3>
-              <p style="color: #666; margin-bottom: 0;">Open the attached PDF for your complete scouting report including:</p>
-              <ul style="color: #666; margin: 10px 0;">
-                <li>Defensive scheme breakdown</li>
-                <li>Top offensive plays</li>
-                <li>Key players to watch</li>
-                <li>Game plan recommendations</li>
-                <li>Practice focus areas</li>
-              </ul>
-            </div>
-            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 25px 0;">
-            <p style="color: #999; font-size: 13px;">
-              <strong>Need another report?</strong><br>
-              Just reply to this email with a new video link!
-            </p>
-          </div>
-          <div style="background: #1a1a2e; padding: 20px; text-align: center; border-radius: 0 0 8px 8px;">
-            <p style="color: #999; font-size: 12px; margin: 0;">
-              CoachIQ - AI Basketball Scouting<br>
-              <a href="https://meetyournewstatscoach.com" style="color: #FF6B35;">meetyournewstatscoach.com</a>
-            </p>
-          </div>
-        </div>
-      `,
-      attachments: [
-        {
-          content: pdfBuffer.toString('base64'),
-          filename: `CoachIQ_Report_${opponentName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`,
-          type: 'application/pdf',
-          disposition: 'attachment'
-        }
-      ]
-    };
-    
-    await sgMail.send(msg);
-    console.log(`📧 Report sent to ${to}`);
-  } catch (error) {
-    console.error('📧 Report email error:', error.message);
-    if (error.response) {
-      console.error('SendGrid response:', error.response.body);
-    }
-    throw error;
-  }
-}
+app.get('/api/reports/:id', (req, res) => {
+  const report = reports.get(req.params.id);
+  if (!report) return res.status(404).json({ error: 'Report not found' });
+  const { pdfBase64, originalFile, ...data } = report;
+  res.json(data);
+});
 
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
-function extractVideoUrl(text) {
-  // Clean up text but preserve URL special characters
-  let cleanText = text
-    .replace(/<[^>]*>/g, ' ')  // Remove HTML tags
-    .replace(/\r\n/g, ' ')     // Replace line breaks with spaces
-    .replace(/\n/g, ' ')       // Replace newlines
-    .replace(/\s+/g, ' ');     // Collapse whitespace
+app.get('/api/reports/:id/pdf', (req, res) => {
+  const report = reports.get(req.params.id);
+  if (!report || !report.pdfBase64) return res.status(404).json({ error: 'PDF not available' });
   
-  console.log('🔍 Searching for video URL in text...');
-  
-  // Pattern specifically for Hudl notification/download links (highest priority)
-  const hudlNotificationPattern = /https?:\/\/(?:www\.)?hudl\.com\/notifications-tracking\/[^\s<>"]+/gi;
-  const hudlMatches = cleanText.match(hudlNotificationPattern);
-  if (hudlMatches && hudlMatches.length > 0) {
-    // Get the longest match (most complete URL)
-    const longestMatch = hudlMatches.reduce((a, b) => a.length > b.length ? a : b);
-    console.log(`🔍 Found Hudl notification URL (${longestMatch.length} chars)`);
-    return longestMatch.replace(/[.,;]$/, '');
-  }
-  
-  // Pattern for direct vtemp.hudl.com URLs
-  const vtempPattern = /https?:\/\/vtemp\.hudl\.com\/[^\s<>"]+/gi;
-  const vtempMatches = cleanText.match(vtempPattern);
-  if (vtempMatches && vtempMatches.length > 0) {
-    const longestMatch = vtempMatches.reduce((a, b) => a.length > b.length ? a : b);
-    console.log(`🔍 Found Hudl vtemp URL (${longestMatch.length} chars)`);
-    return longestMatch.replace(/[.,;]$/, '');
-  }
-  
-  // Other patterns in priority order
-  const patterns = [
-    // Google Drive
-    /https?:\/\/drive\.google\.com\/file\/d\/[\w-]+[^\s<>"]*/gi,
-    /https?:\/\/drive\.google\.com\/open\?id=[\w-]+/gi,
-    // YouTube
-    /https?:\/\/(?:www\.)?youtube\.com\/watch\?v=[\w-]+/gi,
-    /https?:\/\/youtu\.be\/[\w-]+/gi,
-    // Regular Hudl video pages
-    /https?:\/\/(?:www\.)?hudl\.com\/video\/[\w\/-]+/gi,
-    /https?:\/\/(?:www\.)?hudl\.com\/v\/[\w]+/gi,
-    // Direct MP4
-    /https?:\/\/[^\s<>"]+\.mp4[^\s<>"]*/gi,
-  ];
-  
-  for (const pattern of patterns) {
-    const matches = cleanText.match(pattern);
-    if (matches && matches.length > 0) {
-      const url = matches[0].replace(/[.,;]$/, '');
-      console.log(`🔍 Found URL: ${url.substring(0, 80)}...`);
-      return url;
-    }
-  }
-  
-  console.log('🔍 No video URL found');
-  return null;
-}
+  const pdfBuffer = Buffer.from(report.pdfBase64, 'base64');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="CoachIQ_${report.opponentName.replace(/[^a-zA-Z0-9]/g, '_')}.pdf"`);
+  res.send(pdfBuffer);
+});
 
-function cleanOpponentName(subject) {
-  // Remove common prefixes and clean up
-  let name = subject
-    .replace(/^(re:|fwd?:|fw:)\s*/gi, '')
-    .replace(/^scout(ing)?\s*(report)?:?\s*/gi, '')
-    .replace(/^analyze:?\s*/gi, '')
-    .replace(/^video:?\s*/gi, '')
-    .replace(/^game\s*film:?\s*/gi, '')
-    .trim();
+app.get('/api/users/:email/reports', (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const user = users.get(email);
   
-  // Capitalize first letter of each word
-  name = name.replace(/\b\w/g, l => l.toUpperCase());
+  const userReports = [];
+  reports.forEach(report => {
+    if (report.userEmail === email) {
+      const { pdfBase64, originalFile, ...data } = report;
+      userReports.push(data);
+    }
+  });
   
-  return name || 'Unknown Opponent';
+  userReports.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  
+  res.json({
+    reports: userReports,
+    subscription: user?.subscription || 'free',
+    reportsRemaining: user?.reportsRemaining || 0
+  });
+});
+
+function formatFileSize(bytes) {
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(2) + ' GB';
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  return (bytes / 1024).toFixed(1) + ' KB';
 }
 
 // ============================================
@@ -1242,11 +648,9 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('🏀 =====================================');
-  console.log('🏀 CoachIQ Backend Server Started!');
+  console.log('🏀 CoachIQ Backend Started!');
   console.log('🏀 =====================================');
   console.log(`📍 Port: ${PORT}`);
-  console.log(`📧 Scout Email: ${process.env.SCOUT_EMAIL || 'not set'}`);
-  console.log(`🔑 Anthropic API: ${process.env.ANTHROPIC_API_KEY ? '✅ Set' : '❌ Missing'}`);
-  console.log(`📬 SendGrid API: ${process.env.SENDGRID_API_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`🔑 Anthropic: ${process.env.ANTHROPIC_API_KEY ? '✅' : '❌'}`);
   console.log('');
 });
