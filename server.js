@@ -51,7 +51,9 @@ app.use(cors(corsOptions));
 // Handle preflight requests
 app.options('*', cors(corsOptions));
 
-app.use(express.json());
+// Increase payload limits for large file uploads
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Multer for file uploads (10GB max)
 const storage = multer.diskStorage({
@@ -76,6 +78,20 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const users = new Map();
 const reports = new Map();
 
+// Add default test user for easy access
+const bcrypt = require('bcryptjs');
+bcrypt.hash('test123', 10).then(hash => {
+  users.set('test@coachiq.com', {
+    id: 'test-user-1',
+    email: 'test@coachiq.com',
+    password: hash,
+    subscription: 'pro',
+    reportsRemaining: 999,
+    createdAt: new Date().toISOString()
+  });
+  console.log('✅ Default test user created: test@coachiq.com / test123');
+});
+
 // ============================================
 // HEALTH CHECK
 // ============================================
@@ -90,7 +106,30 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({ 
     message: 'CoachIQ API Server',
-    version: '2.0.0'
+    version: '2.0.0',
+    endpoints: {
+      health: '/health',
+      signup: 'POST /api/auth/signup',
+      login: 'POST /api/auth/login',
+      upload: 'POST /api/upload',
+      reports: 'GET /api/users/:email/reports'
+    },
+    test_user: {
+      email: 'test@coachiq.com',
+      password: 'test123',
+      note: 'Use this for testing'
+    }
+  });
+});
+
+// Debug endpoint
+app.get('/api/debug', (req, res) => {
+  res.json({
+    users: users.size,
+    reports: reports.size,
+    env: {
+      anthropic_key: process.env.ANTHROPIC_API_KEY ? '✅ Set' : '❌ Missing'
+    }
   });
 });
 
@@ -170,17 +209,23 @@ app.post('/api/auth/login', async (req, res) => {
 // FILE UPLOAD
 // ============================================
 app.post('/api/upload', upload.single('video'), async (req, res) => {
-  console.log('📤 Received upload request');
+  console.log('📤 ========== UPLOAD REQUEST ==========');
+  console.log('📤 Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('📤 Body keys:', Object.keys(req.body));
+  console.log('📤 File:', req.file ? 'Present' : 'MISSING');
   
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No video file uploaded' });
+      console.error('❌ No file in request!');
+      console.error('Body:', req.body);
+      return res.status(400).json({ error: 'No video file uploaded. File must be sent as "video" field in multipart/form-data' });
     }
     
     const { opponentName, opponentColor, yourColor, userEmail } = req.body;
     
     console.log(`📤 File: ${req.file.originalname} (${formatFileSize(req.file.size)})`);
     console.log(`📤 Opponent: ${opponentName}`);
+    console.log(`📤 User: ${userEmail}`);
     
     const reportId = uuidv4();
     
