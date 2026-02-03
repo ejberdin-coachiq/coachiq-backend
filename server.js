@@ -78,19 +78,23 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const users = new Map();
 const reports = new Map();
 
-// Add default test user for easy access
-const bcrypt = require('bcryptjs');
-bcrypt.hash('test123', 10).then(hash => {
-  users.set('test@coachiq.com', {
-    id: 'test-user-1',
-    email: 'test@coachiq.com',
-    password: hash,
-    subscription: 'pro',
-    reportsRemaining: 999,
-    createdAt: new Date().toISOString()
-  });
-  console.log('✅ Default test user created: test@coachiq.com / test123');
-});
+// Add default test user for easy access (async initialization)
+(async () => {
+  try {
+    const hash = await bcrypt.hash('test123', 10);
+    users.set('test@coachiq.com', {
+      id: 'test-user-1',
+      email: 'test@coachiq.com',
+      password: hash,
+      subscription: 'pro',
+      reportsRemaining: 999,
+      createdAt: new Date().toISOString()
+    });
+    console.log('✅ Default test user created: test@coachiq.com / test123');
+  } catch (error) {
+    console.error('❌ Failed to create test user:', error);
+  }
+})();
 
 // ============================================
 // HEALTH CHECK
