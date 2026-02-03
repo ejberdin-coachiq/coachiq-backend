@@ -1654,3 +1654,5 @@ app.listen(PORT, () => {
     console.log(`🛡️ All defensive schemes: 40+ variations`);
     console.log(`⚡ All offensive sets: 60+ actions and plays`);
 });
+
+  // Force redeploy 2026-02-03
