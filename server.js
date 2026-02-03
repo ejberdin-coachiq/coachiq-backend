@@ -446,15 +446,34 @@ async function downloadVideo(url, tempDir) {
         { timeout: 600000 }
       );
     } else if (source === 'hudl') {
-      // Try yt-dlp first (works for some public Hudl links)
-      try {
+      // Check if it's a Hudl download link with direct MP4 URL
+      const directUrl = extractHudlDirectUrl(url);
+      if (directUrl) {
+        console.log(`📥 Found direct Hudl MP4 URL, downloading first 15 minutes...`);
+        // Download with curl, limit to ~500MB or 15 minutes of video
+        // Use ffmpeg to download only first 15 minutes
         await execAsync(
-          `yt-dlp -f "best[height<=720]" -o "${outputPath}" "${url}"`,
-          { timeout: 600000 }
+          `curl -L -o "${outputPath}" --max-filesize 2147483648 "${directUrl}"`,
+          { timeout: 1200000 } // 20 minute timeout for large files
         );
-      } catch (e) {
-        throw new Error('Hudl video could not be downloaded. Please share via YouTube or Google Drive instead.');
+      } else {
+        // Try yt-dlp for regular Hudl video pages
+        try {
+          await execAsync(
+            `yt-dlp -f "best[height<=720]" -o "${outputPath}" "${url}"`,
+            { timeout: 600000 }
+          );
+        } catch (e) {
+          throw new Error('Hudl video could not be downloaded. Please use the Hudl "Download" feature and share the download link, or upload to Google Drive.');
+        }
       }
+    } else if (source === 'direct_mp4') {
+      // Direct MP4 URL
+      console.log(`📥 Downloading direct MP4 URL...`);
+      await execAsync(
+        `curl -L -o "${outputPath}" --max-filesize 2147483648 "${url}"`,
+        { timeout: 1200000 }
+      );
     } else {
       // Generic attempt with yt-dlp
       await execAsync(
@@ -469,7 +488,24 @@ async function downloadVideo(url, tempDir) {
       throw new Error('Downloaded file is too small - may be invalid');
     }
     
-    console.log(`✅ Downloaded: ${(stats.size / 1024 / 1024).toFixed(1)} MB`);
+    const sizeMB = stats.size / 1024 / 1024;
+    console.log(`✅ Downloaded: ${sizeMB.toFixed(1)} MB`);
+    
+    // If file is very large (>1GB), trim to first 15 minutes
+    if (sizeMB > 1000) {
+      console.log(`📏 Large file detected, trimming to first 15 minutes...`);
+      const trimmedPath = path.join(tempDir, 'video_trimmed.mp4');
+      await execAsync(
+        `ffmpeg -i "${outputPath}" -t 900 -c copy "${trimmedPath}"`,
+        { timeout: 300000 }
+      );
+      // Replace original with trimmed
+      await fs.unlink(outputPath);
+      await fs.rename(trimmedPath, outputPath);
+      const newStats = await fs.stat(outputPath);
+      console.log(`✅ Trimmed to: ${(newStats.size / 1024 / 1024).toFixed(1)} MB`);
+    }
+    
     return outputPath;
     
   } catch (error) {
@@ -478,11 +514,40 @@ async function downloadVideo(url, tempDir) {
   }
 }
 
+/**
+ * Extract direct MP4 URL from Hudl download/notification links
+ */
+function extractHudlDirectUrl(url) {
+  // Check for forward parameter in Hudl notification links
+  // Example: https://www.hudl.com/notifications-tracking/...?forward=https%3a%2f%2fvtemp.hudl.com%2f...%2f.mp4
+  try {
+    const urlObj = new URL(url);
+    const forwardParam = urlObj.searchParams.get('forward');
+    if (forwardParam) {
+      const decodedUrl = decodeURIComponent(forwardParam);
+      if (decodedUrl.includes('.mp4') || decodedUrl.includes('vtemp.hudl.com')) {
+        return decodedUrl;
+      }
+    }
+    
+    // Check if URL itself is a direct vtemp link
+    if (url.includes('vtemp.hudl.com') && url.includes('.mp4')) {
+      return url;
+    }
+  } catch (e) {
+    console.log('Could not parse Hudl URL:', e.message);
+  }
+  
+  return null;
+}
+
 function detectVideoSource(url) {
   if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
   if (url.includes('drive.google.com')) return 'google_drive';
   if (url.includes('hudl.com')) return 'hudl';
   if (url.includes('vimeo.com')) return 'vimeo';
+  if (url.includes('vtemp.hudl.com')) return 'hudl';
+  if (url.endsWith('.mp4') || url.includes('.mp4?')) return 'direct_mp4';
   return 'unknown';
 }
 
@@ -1065,9 +1130,15 @@ function extractVideoUrl(text) {
     // Google Drive
     /https?:\/\/drive\.google\.com\/file\/d\/[\w-]+/gi,
     /https?:\/\/drive\.google\.com\/open\?id=[\w-]+/gi,
-    // Hudl
+    // Hudl download/notification links (with forward parameter)
+    /https?:\/\/(?:www\.)?hudl\.com\/notifications-tracking\/[^\s<>"]+/gi,
+    // Hudl direct temp video links
+    /https?:\/\/vtemp\.hudl\.com\/[^\s<>"]+\.mp4[^\s<>"]*/gi,
+    // Regular Hudl video pages
     /https?:\/\/(?:www\.)?hudl\.com\/video\/[\w\/-]+/gi,
     /https?:\/\/(?:www\.)?hudl\.com\/v\/[\w]+/gi,
+    // Direct MP4 links
+    /https?:\/\/[^\s<>"]+\.mp4[^\s<>"]*/gi,
     // Generic URL as fallback
     /https?:\/\/[^\s<>"]+/gi
   ];
@@ -1081,7 +1152,7 @@ function extractVideoUrl(text) {
         if (url.includes('unsubscribe') || url.includes('mailto:')) continue;
         if (url.includes('youtube') || url.includes('youtu.be') || 
             url.includes('hudl') || url.includes('drive.google') ||
-            url.includes('vimeo')) {
+            url.includes('vimeo') || url.includes('.mp4')) {
           return url.replace(/[.,;]$/, ''); // Remove trailing punctuation
         }
       }
