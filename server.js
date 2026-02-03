@@ -29,40 +29,31 @@ const execAsync = promisify(exec);
 // Initialize Express
 const app = express();
 
-// CORS Configuration
-// For production, you should restrict origins to your specific domains
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    // Whitelist of allowed domains
-    const allowedDomains = [
-      'https://meetyournewstatscoach.com',
-      'https://www.meetyournewstatscoach.com',
-      'https://coachiq-backend-prod.ay.app',
-      'http://localhost:3000',
-      'http://localhost:8080'
-    ];
-    
-    // Allow if origin matches or allow all for development
-    if (allowedDomains.includes(origin)) {
-      callback(null, true);
-    } else {
-      // For now, allow all - restrict in production
-      callback(null, true);
-    }
-  },
-  credentials: true,
+// CORS Configuration - Permissive for testing
+app.use(cors({
+  origin: '*', // Allow all origins for now
+  credentials: false, // Don't send credentials with *
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
   exposedHeaders: ['Content-Type', 'Authorization']
-};
+}));
 
-app.use(cors(corsOptions));
+// Handle preflight requests explicitly
+app.options('*', cors());
 
-// Handle preflight requests
-app.options('*', cors(corsOptions));
+// Additional CORS headers middleware (belt and suspenders approach)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  // Handle OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(200);
+  } else {
+    next();
+  }
+});
 
 // Increase payload limits for large file uploads
 app.use(express.json({ limit: '50mb' }));
