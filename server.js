@@ -12,7 +12,13 @@ const multer = require('multer');
 const { Resend } = require('resend');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+       origin: '*',
+       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+       allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+       credentials: false
+   }));
+   app.options('*', cors());
 app.use(express.json({ limit: '100mb' }));
 
 // Configure multer
