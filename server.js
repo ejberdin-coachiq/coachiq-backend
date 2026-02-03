@@ -29,8 +29,22 @@ const execAsync = promisify(exec);
 // Initialize Express
 const app = express();
 
-// CORS
-app.use(cors());
+// CORS - Allow requests from your frontend domains
+app.use(cors({
+  origin: [
+    'https://coachiq.netlify.app',
+    'https://coachiq.vercel.app', 
+    'http://localhost:3000',
+    'http://localhost:8080',
+    'http://127.0.0.1:3000',
+    /\.netlify\.app$/,
+    /\.vercel\.app$/
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
 // Multer for file uploads (10GB max)
@@ -348,23 +362,53 @@ async function analyzeWithClaude(frames, opponentName, opponentColor, yourColor)
       {
         type: 'text',
         text: `You are an expert basketball scout analyzing game film of "${opponentName}".
-The opponent wears ${opponentColor} jerseys. Focus on that team.
+The opponent wears ${opponentColor} jerseys. Your team wears ${yourColor} jerseys.
+
+CRITICAL: Analyze ONLY the ${opponentName} team in ${opponentColor} jerseys.
 
 Timestamps: ${batch.map(f => f.timestamp).join(', ')}
 
-For EACH frame identify:
-1. Defense (man-to-man, 2-3 zone, 3-2 zone, 1-3-1, press, etc.)
-2. Offense (pick and roll, motion, horns, flex, isolation, fast break, etc.)
-3. Ball handler jersey #
-4. Shot location if any
-5. Pace (transition or half-court)
+For EACH frame, analyze and identify:
 
-Return ONLY JSON:
+1. **Defense Type**: man-to-man, 2-3 zone, 3-2 zone, 1-3-1, 1-2-2 zone, full court press, half court trap, matchup zone, etc.
+2. **Press Defense**: Are they applying full court pressure? (true/false)
+3. **Offense Type**: pick and roll, motion offense, horns set, flex offense, isolation, fast break, triangle, princeton, etc.
+4. **Ball Handler**: Jersey number of player with ball (e.g., "#23")
+5. **Shot Attempt**: If a shot is taken, provide:
+   - shooterJersey: Jersey number
+   - shotType: "2pt", "3pt", "layup", "dunk", "free throw"
+   - courtZone: "paint", "right wing", "left wing", "top of key", "right corner", "left corner", "right baseline", "left baseline"
+   - x: Approximate x-coordinate on court (0-94 feet, 0=baseline, 47=half court, 94=opposite baseline)
+   - y: Approximate y-coordinate on court (0-50 feet, 25=center)
+   - made: true/false if you can determine
+6. **Baseline Out of Bounds (BLOB)**: Is this a BLOB play? true/false
+7. **Key Players Visible**: List up to 5 jersey numbers of ${opponentName} players visible in frame
+8. **Pace**: "transition" or "half-court"
+
+Return ONLY valid JSON (no markdown, no backticks):
 {
   "frames": [
-    {"defense": "man-to-man", "offense": "pick and roll", "ballHandler": "#23", "shot": null, "pace": "half-court"}
+    {
+      "defense": "man-to-man",
+      "pressDefense": false,
+      "offense": "pick and roll",
+      "ballHandler": "#23",
+      "shot": {
+        "shooterJersey": "#23",
+        "shotType": "3pt",
+        "courtZone": "top of key",
+        "x": 47,
+        "y": 25,
+        "made": true
+      },
+      "blobPlay": false,
+      "visiblePlayers": ["#23", "#15", "#10", "#32", "#5"],
+      "pace": "half-court"
+    }
   ]
-}`
+}
+
+If no shot in frame, use: "shot": null`
       },
       ...batch.map(f => ({
         type: 'image',
@@ -375,7 +419,7 @@ Return ONLY JSON:
     try {
       const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [{ role: 'user', content }]
       });
       
@@ -407,23 +451,84 @@ function generateSummary(frameResults, opponentName) {
   const defenseCounts = {};
   const offenseCounts = {};
   const playerCounts = {};
+  const playerAppearances = {};
   const paceCounts = { transition: 0, 'half-court': 0 };
+  const shotAttempts = [];
+  let pressDefenseFrames = 0;
+  let blobPlayFrames = 0;
   
+  // Process all frame data
   frameResults.forEach(f => {
-    if (f.defense) defenseCounts[f.defense.toLowerCase()] = (defenseCounts[f.defense.toLowerCase()] || 0) + 1;
-    if (f.offense) offenseCounts[f.offense.toLowerCase()] = (offenseCounts[f.offense.toLowerCase()] || 0) + 1;
-    if (f.ballHandler) playerCounts[f.ballHandler] = (playerCounts[f.ballHandler] || 0) + 1;
-    if (f.pace === 'transition' || f.pace === 'fast break') paceCounts.transition++;
-    else paceCounts['half-court']++;
+    // Defense tracking
+    if (f.defense) {
+      const defenseKey = f.defense.toLowerCase();
+      defenseCounts[defenseKey] = (defenseCounts[defenseKey] || 0) + 1;
+    }
+    
+    // Press defense tracking
+    if (f.pressDefense === true) pressDefenseFrames++;
+    
+    // BLOB play tracking
+    if (f.blobPlay === true) blobPlayFrames++;
+    
+    // Offense tracking
+    if (f.offense) {
+      const offenseKey = f.offense.toLowerCase();
+      offenseCounts[offenseKey] = (offenseCounts[offenseKey] || 0) + 1;
+    }
+    
+    // Ball handler tracking
+    if (f.ballHandler) {
+      playerCounts[f.ballHandler] = (playerCounts[f.ballHandler] || 0) + 1;
+    }
+    
+    // Visible players tracking (for starting 5)
+    if (f.visiblePlayers && Array.isArray(f.visiblePlayers)) {
+      f.visiblePlayers.forEach(jersey => {
+        playerAppearances[jersey] = (playerAppearances[jersey] || 0) + 1;
+      });
+    }
+    
+    // Pace tracking
+    if (f.pace === 'transition' || f.pace === 'fast break') {
+      paceCounts.transition++;
+    } else {
+      paceCounts['half-court']++;
+    }
+    
+    // Shot tracking
+    if (f.shot && f.shot.shooterJersey) {
+      shotAttempts.push({
+        ...f.shot,
+        timestamp: f.timestamp
+      });
+    }
   });
   
   const total = frameResults.length || 1;
   
+  // Sort data
   const sortedDefense = Object.entries(defenseCounts).sort((a, b) => b[1] - a[1]);
-  const sortedOffense = Object.entries(offenseCounts).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const sortedOffense = Object.entries(offenseCounts).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const sortedPlayers = Object.entries(playerCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const sortedAppearances = Object.entries(playerAppearances).sort((a, b) => b[1] - a[1]).slice(0, 5);
   
+  // Calculate percentages
   const transitionPct = Math.round((paceCounts.transition / total) * 100);
+  const pressPct = Math.round((pressDefenseFrames / total) * 100);
+  const blobPct = Math.round((blobPlayFrames / total) * 100);
+  
+  // Generate shot chart data
+  const shotChart = generateShotChartData(shotAttempts);
+  
+  // Generate starting 5 analysis
+  const starting5 = generateStarting5Analysis(sortedAppearances, sortedPlayers, shotAttempts);
+  
+  // Generate practice plans
+  const practicePlans = generatePracticePlans(sortedDefense, sortedOffense, pressPct, starting5);
+  
+  // Generate BLOB analysis
+  const blobAnalysis = generateBLOBAnalysis(frameResults, blobPlayFrames, blobPct);
   
   return {
     opponent: opponentName,
@@ -436,48 +541,285 @@ function generateSummary(frameResults, opponentName) {
       secondary: sortedDefense[1]?.[0] || null,
       secondaryPct: sortedDefense[1] ? Math.round((sortedDefense[1][1] / total) * 100) : 0,
       all: sortedDefense.map(([name, count]) => ({
-        name: name.charAt(0).toUpperCase() + name.slice(1),
+        name: name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' '),
         percentage: Math.round((count / total) * 100)
-      }))
+      })),
+      pressDefense: {
+        used: pressPct > 5,
+        frequency: pressPct,
+        description: pressPct > 30 ? 'Heavy press' : pressPct > 15 ? 'Moderate press' : pressPct > 5 ? 'Occasional press' : 'No press'
+      }
     },
     
     offense: {
       topPlays: sortedOffense.map(([name, count]) => ({
-        name: name.charAt(0).toUpperCase() + name.slice(1),
+        name: name.charAt(0).toUpperCase() + name.slice(1).replace(/-/g, ' '),
         percentage: Math.round((count / total) * 100)
       }))
     },
     
-    keyPlayers: sortedPlayers.map(([name, count], idx) => ({
-      jersey: name,
+    keyPlayers: sortedPlayers.map(([jersey, count], idx) => ({
+      jersey: jersey,
       ballHandlingPct: Math.round((count / total) * 100),
-      role: idx === 0 ? 'Primary Ball Handler' : 'Secondary Handler'
+      role: idx === 0 ? 'Primary Ball Handler' : idx === 1 ? 'Secondary Ball Handler' : 'Ball Handler'
     })),
+    
+    starting5: starting5,
+    
+    shotChart: shotChart,
     
     pace: {
       transitionPct,
       halfCourtPct: 100 - transitionPct,
       rating: Math.round(50 + transitionPct * 0.5),
-      description: transitionPct > 30 ? 'Up-tempo' : transitionPct > 15 ? 'Moderate' : 'Half-court'
+      description: transitionPct > 30 ? 'Up-tempo' : transitionPct > 15 ? 'Moderate' : 'Half-court oriented'
     },
+    
+    blobPlays: blobAnalysis,
+    
+    practicePlans: practicePlans,
     
     recommendations: {
       offensive: [
-        sortedDefense[0]?.[0]?.includes('zone') ? 'Attack zone gaps' : 'Use screens for mismatches',
-        'Push pace in transition',
-        'Look for pick and roll opportunities'
+        sortedDefense[0]?.[0]?.includes('zone') ? 'Attack zone gaps with ball movement' : 'Use ball screens to create mismatches',
+        pressPct > 15 ? 'Practice press break - they press frequently!' : 'Push pace in transition',
+        'Exploit weak-side rebounding',
+        sortedDefense[0]?.[0]?.includes('press') ? 'Quick outlets against pressure' : 'Look for pick and roll opportunities'
       ],
       defensive: [
-        sortedPlayers[0] ? `Key assignment: ${sortedPlayers[0][0]}` : 'Identify primary scorer',
-        'Contest all shots',
-        'Force weak hand'
+        sortedPlayers[0] ? `Priority assignment: ${sortedPlayers[0][0]} (primary ball handler)` : 'Identify primary scorer early',
+        shotChart.hotZones.length > 0 ? `Defend hot zones: ${shotChart.hotZones.join(', ')}` : 'Contest all perimeter shots',
+        'Limit transition opportunities',
+        starting5[0] ? `Watch for ${starting5[0].jersey} - ${starting5[0].tendency}` : 'Force weak hand drives'
       ],
-      practice: [
-        'Transition offense drills',
-        sortedDefense[0]?.[0]?.includes('zone') ? 'Zone offense sets' : 'Screen continuity',
-        'Defensive communication'
-      ]
+      practice: practicePlans.priorities
     }
+  };
+}
+
+function generateShotChartData(shotAttempts) {
+  const zoneStats = {};
+  const shotsByType = { '2pt': 0, '3pt': 0, 'layup': 0, 'dunk': 0 };
+  const madeShots = [];
+  const missedShots = [];
+  
+  shotAttempts.forEach(shot => {
+    // Zone statistics
+    const zone = shot.courtZone || 'unknown';
+    if (!zoneStats[zone]) {
+      zoneStats[zone] = { attempts: 0, made: 0 };
+    }
+    zoneStats[zone].attempts++;
+    if (shot.made) zoneStats[zone].made++;
+    
+    // Shot type statistics
+    if (shot.shotType && shotsByType.hasOwnProperty(shot.shotType)) {
+      shotsByType[shot.shotType]++;
+    }
+    
+    // Separate made/missed for visualization
+    const shotPoint = {
+      x: shot.x || 47,
+      y: shot.y || 25,
+      type: shot.shotType,
+      shooter: shot.shooterJersey,
+      zone: zone
+    };
+    
+    if (shot.made) {
+      madeShots.push(shotPoint);
+    } else if (shot.made === false) {
+      missedShots.push(shotPoint);
+    }
+  });
+  
+  // Calculate hot zones (>40% shooting)
+  const hotZones = Object.entries(zoneStats)
+    .filter(([zone, stats]) => stats.attempts >= 2 && (stats.made / stats.attempts) >= 0.4)
+    .map(([zone]) => zone)
+    .slice(0, 3);
+  
+  // Calculate cold zones (<30% shooting)
+  const coldZones = Object.entries(zoneStats)
+    .filter(([zone, stats]) => stats.attempts >= 2 && (stats.made / stats.attempts) < 0.3)
+    .map(([zone]) => zone)
+    .slice(0, 2);
+  
+  return {
+    totalAttempts: shotAttempts.length,
+    madeShots: madeShots,
+    missedShots: missedShots,
+    zoneStats: Object.entries(zoneStats).map(([zone, stats]) => ({
+      zone: zone.charAt(0).toUpperCase() + zone.slice(1),
+      attempts: stats.attempts,
+      made: stats.made,
+      percentage: stats.attempts > 0 ? Math.round((stats.made / stats.attempts) * 100) : 0
+    })),
+    shotDistribution: shotsByType,
+    hotZones: hotZones,
+    coldZones: coldZones
+  };
+}
+
+function generateStarting5Analysis(appearances, ballHandlers, shotAttempts) {
+  const starting5 = [];
+  
+  // Get top 5 most frequent players
+  const top5 = appearances.slice(0, 5);
+  
+  top5.forEach(([jersey, appearanceCount], idx) => {
+    // Find ball handling stats
+    const ballHandlerEntry = ballHandlers.find(([j]) => j === jersey);
+    const ballHandlingFreq = ballHandlerEntry ? ballHandlerEntry[1] : 0;
+    
+    // Find shooting stats
+    const playerShots = shotAttempts.filter(s => s.shooterJersey === jersey);
+    const shotsMade = playerShots.filter(s => s.made === true).length;
+    const shotsAttempted = playerShots.length;
+    
+    // Determine role and tendency
+    let role = 'Role Player';
+    let tendency = 'Unknown role';
+    let strengths = [];
+    let weaknesses = [];
+    
+    if (idx === 0 && ballHandlingFreq > 10) {
+      role = 'Point Guard / Primary Ball Handler';
+      tendency = 'Initiates offense, controls tempo';
+      strengths.push('Ball handling', 'Decision making');
+      if (shotsAttempted < 3) weaknesses.push('Limited scoring attempts');
+    } else if (ballHandlingFreq > 5) {
+      role = 'Secondary Ball Handler / Wing';
+      tendency = 'Versatile - handles and scores';
+      strengths.push('Versatility');
+    } else if (shotsAttempted >= 4) {
+      role = 'Primary Scorer';
+      tendency = 'Looks for scoring opportunities';
+      strengths.push('Scoring volume');
+      if (shotsMade / shotsAttempted < 0.4) {
+        weaknesses.push('Shot selection');
+      }
+    } else if (shotsAttempted <= 1) {
+      role = 'Interior / Post Player';
+      tendency = 'Works inside, sets screens';
+      strengths.push('Interior presence');
+      weaknesses.push('Perimeter game limited');
+    }
+    
+    // Shot tendencies
+    const threePointers = playerShots.filter(s => s.shotType === '3pt').length;
+    if (threePointers >= 2) {
+      strengths.push('Three-point shooting');
+    }
+    
+    const paintShots = playerShots.filter(s => 
+      s.courtZone === 'paint' || s.shotType === 'layup' || s.shotType === 'dunk'
+    ).length;
+    if (paintShots >= 2) {
+      strengths.push('Paint scoring');
+    }
+    
+    starting5.push({
+      jersey: jersey,
+      role: role,
+      tendency: tendency,
+      strengths: strengths.length > 0 ? strengths : ['Solid fundamentals'],
+      weaknesses: weaknesses.length > 0 ? weaknesses : ['None identified'],
+      ballHandlingFreq: ballHandlingFreq,
+      shotsAttempted: shotsAttempted,
+      shotsMade: shotsMade,
+      fieldGoalPct: shotsAttempted > 0 ? Math.round((shotsMade / shotsAttempted) * 100) : 0
+    });
+  });
+  
+  return starting5;
+}
+
+function generatePracticePlans(defenses, offenses, pressPct, starting5) {
+  const plans = {
+    priorities: [],
+    drills: []
+  };
+  
+  // Defense-based priorities
+  const primaryDefense = defenses[0]?.[0] || '';
+  if (primaryDefense.includes('zone')) {
+    plans.priorities.push('Practice zone offense - ball movement and skip passes');
+    plans.drills.push({
+      name: 'Zone Attack Drill',
+      duration: '15 min',
+      description: 'Ball reversal, gap attacks, and skip passes against zone defense'
+    });
+  } else {
+    plans.priorities.push('Practice screen continuity vs man defense');
+    plans.drills.push({
+      name: 'Ball Screen Series',
+      duration: '15 min',
+      description: 'Pick and roll, pick and pop, slip screens against man-to-man'
+    });
+  }
+  
+  // Press break practice
+  if (pressPct > 15) {
+    plans.priorities.push('CRITICAL: Practice press break - they press frequently!');
+    plans.drills.push({
+      name: 'Press Break',
+      duration: '20 min',
+      description: 'Full court press break with multiple outlets and safety valves'
+    });
+  }
+  
+  // Offense-based priorities
+  const topOffense = offenses[0]?.[0] || '';
+  if (topOffense.includes('pick') || topOffense.includes('screen')) {
+    plans.priorities.push('Defend ball screens - hedge or switch based on matchups');
+    plans.drills.push({
+      name: 'Screen Defense',
+      duration: '12 min',
+      description: 'Hedge and recover or switch technique on ball screens'
+    });
+  }
+  
+  // Transition defense
+  plans.priorities.push('Transition defense - get back and protect paint');
+  plans.drills.push({
+    name: 'Transition Defense',
+    duration: '10 min',
+    description: '3v2, 4v3 disadvantage situations, protect paint first'
+  });
+  
+  // Player-specific
+  if (starting5.length > 0 && starting5[0].jersey) {
+    plans.priorities.push(`Assign best defender to ${starting5[0].jersey}`);
+  }
+  
+  plans.drills.push({
+    name: 'Closeout Drill',
+    duration: '10 min',
+    description: 'Sprint closeouts to shooters, force drives to help'
+  });
+  
+  plans.drills.push({
+    name: 'Shell Drill',
+    duration: '15 min',
+    description: 'Team defensive principles - help, recover, closeout, communicate'
+  });
+  
+  return plans;
+}
+
+function generateBLOBAnalysis(frameResults, blobFrames, blobPct) {
+  const blobPlays = frameResults.filter(f => f.blobPlay === true);
+  
+  return {
+    frequency: blobPct,
+    detected: blobFrames > 0,
+    description: blobPct > 10 ? 'Frequently runs BLOB plays - scout their sets!' : 
+                 blobPct > 5 ? 'Occasional BLOB plays' : 
+                 'Limited BLOB play data',
+    recommendation: blobFrames > 2 ? 
+      'Practice BLOB defense - they have designed plays from baseline. Watch for back screens and lob opportunities.' :
+      'Standard BLOB defense should suffice - no special sets detected.'
   };
 }
 
@@ -495,7 +837,9 @@ async function generatePDF(report, tempDir) {
     
     const orange = '#FF6B35';
     const accent = '#00D4AA';
+    const gray = '#666';
     
+    // ===== PAGE 1: OVERVIEW =====
     // Header
     doc.rect(0, 0, 612, 100).fill(orange);
     doc.fillColor('white').fontSize(36).font('Helvetica-Bold').text('SCOUTING REPORT', 50, 28);
@@ -506,44 +850,197 @@ async function generatePDF(report, tempDir) {
     // Stats box
     doc.rect(50, y, 512, 60).fill('#f5f5f5');
     doc.fontSize(20).font('Helvetica-Bold').fillColor(orange).text(analysis.framesAnalyzed.toString(), 80, y + 15);
-    doc.fontSize(9).fillColor('#666').text('FRAMES', 80, y + 40);
+    doc.fontSize(9).fillColor(gray).text('FRAMES', 80, y + 40);
     doc.fontSize(20).fillColor(orange).text(analysis.pace.rating.toString(), 200, y + 15);
-    doc.fontSize(9).fillColor('#666').text('PACE', 200, y + 40);
+    doc.fontSize(9).fillColor(gray).text('PACE', 200, y + 40);
     doc.fontSize(20).fillColor(orange).text(`${analysis.pace.transitionPct}%`, 320, y + 15);
-    doc.fontSize(9).fillColor('#666').text('TRANSITION', 320, y + 40);
+    doc.fontSize(9).fillColor(gray).text('TRANSITION', 320, y + 40);
+    doc.fontSize(20).fillColor(orange).text(`${analysis.shotChart?.totalAttempts || 0}`, 440, y + 15);
+    doc.fontSize(9).fillColor(gray).text('SHOTS', 440, y + 40);
     
     y += 80;
     
-    // Defense
+    // Defense Section
     doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('DEFENSIVE BREAKDOWN', 50, y);
     y += 25;
-    doc.fillColor('#333').fontSize(12).font('Helvetica').text(`Primary: ${analysis.defense.primary} (${analysis.defense.primaryPct}%)`, 50, y);
+    doc.fillColor('#333').fontSize(12).font('Helvetica')
+      .text(`Primary: ${analysis.defense.primary} (${analysis.defense.primaryPct}%)`, 50, y);
+    
     if (analysis.defense.secondary) {
       y += 20;
       doc.text(`Secondary: ${analysis.defense.secondary} (${analysis.defense.secondaryPct}%)`, 50, y);
     }
     
-    y += 40;
+    y += 25;
     
-    // Offense
+    // Press Defense Alert
+    if (analysis.defense.pressDefense.used) {
+      doc.rect(50, y, 512, 40).fill('#fff3cd');
+      doc.fillColor('#856404').fontSize(12).font('Helvetica-Bold')
+        .text(`⚠️ PRESS DEFENSE: ${analysis.defense.pressDefense.description}`, 60, y + 8);
+      doc.fontSize(10).font('Helvetica')
+        .text(`Frequency: ${analysis.defense.pressDefense.frequency}% of possessions`, 60, y + 24);
+      y += 50;
+    }
+    
+    y += 10;
+    
+    // Offense Section
     doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('TOP OFFENSIVE PLAYS', 50, y);
     y += 25;
-    analysis.offense.topPlays.forEach((play, i) => {
-      doc.fillColor('#333').fontSize(12).font('Helvetica').text(`${i + 1}. ${play.name} - ${play.percentage}%`, 50, y);
+    analysis.offense.topPlays.slice(0, 5).forEach((play, i) => {
+      doc.fillColor('#333').fontSize(12).font('Helvetica')
+        .text(`${i + 1}. ${play.name} - ${play.percentage}%`, 50, y);
       y += 20;
     });
     
     y += 20;
     
-    // Players
+    // Key Players Section
     doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('KEY PLAYERS', 50, y);
     y += 25;
-    analysis.keyPlayers.forEach(player => {
-      doc.fillColor('#333').fontSize(12).text(`${player.jersey} - ${player.role} (${player.ballHandlingPct}% ball handling)`, 50, y);
+    analysis.keyPlayers.slice(0, 3).forEach(player => {
+      doc.fillColor('#333').fontSize(12).font('Helvetica')
+        .text(`${player.jersey} - ${player.role} (${player.ballHandlingPct}% ball handling)`, 50, y);
       y += 20;
     });
     
-    // Page 2 - Recommendations
+    // ===== PAGE 2: STARTING 5 ANALYSIS =====
+    doc.addPage();
+    y = 50;
+    
+    doc.rect(0, 0, 612, 60).fill('#1a1a2e');
+    doc.fillColor('white').fontSize(24).font('Helvetica-Bold').text('STARTING 5 ANALYSIS', 50, 18);
+    
+    y = 80;
+    
+    if (analysis.starting5 && analysis.starting5.length > 0) {
+      analysis.starting5.forEach((player, idx) => {
+        if (y > 680) {
+          doc.addPage();
+          y = 50;
+        }
+        
+        // Player card
+        doc.rect(50, y, 512, 110).stroke('#ddd');
+        
+        // Jersey number in circle
+        doc.circle(90, y + 35, 25).fill(orange);
+        doc.fillColor('white').fontSize(18).font('Helvetica-Bold').text(player.jersey, 65, y + 24, { width: 50, align: 'center' });
+        
+        // Player info
+        doc.fillColor('#333').fontSize(14).font('Helvetica-Bold').text(player.role, 130, y + 15);
+        doc.fontSize(11).font('Helvetica').fillColor(gray).text(player.tendency, 130, y + 35);
+        
+        // Stats
+        if (player.shotsAttempted > 0) {
+          doc.fontSize(10).fillColor('#333')
+            .text(`FG: ${player.shotsMade}/${player.shotsAttempted} (${player.fieldGoalPct}%)`, 130, y + 55);
+        }
+        
+        // Strengths
+        doc.fontSize(10).font('Helvetica-Bold').fillColor(accent).text('Strengths:', 130, y + 75);
+        doc.font('Helvetica').fillColor('#333').text(player.strengths.join(', '), 195, y + 75);
+        
+        // Weaknesses
+        doc.fontSize(10).font('Helvetica-Bold').fillColor('#ff6b6b').text('Weaknesses:', 130, y + 92);
+        doc.font('Helvetica').fillColor('#333').text(player.weaknesses.join(', '), 205, y + 92);
+        
+        y += 120;
+      });
+    } else {
+      doc.fillColor(gray).fontSize(12).text('No starting lineup data available', 50, y);
+    }
+    
+    // ===== PAGE 3: SHOT CHART =====
+    doc.addPage();
+    y = 50;
+    
+    doc.rect(0, 0, 612, 60).fill('#1a1a2e');
+    doc.fillColor('white').fontSize(24).font('Helvetica-Bold').text('SHOT CHART', 50, 18);
+    
+    y = 90;
+    
+    if (analysis.shotChart && analysis.shotChart.totalAttempts > 0) {
+      // Draw simplified court
+      const courtX = 100;
+      const courtY = y;
+      const courtWidth = 400;
+      const courtHeight = 280;
+      
+      // Court outline
+      doc.rect(courtX, courtY, courtWidth, courtHeight).stroke('#333');
+      
+      // Paint
+      doc.rect(courtX + 150, courtY, 100, 120).stroke('#999');
+      
+      // Three point line (simplified arc)
+      doc.circle(courtX + 200, courtY, 180).stroke('#999');
+      
+      // Free throw circle
+      doc.circle(courtX + 200, courtY + 120, 50).stroke('#999');
+      
+      // Baseline
+      doc.moveTo(courtX, courtY + courtHeight).lineTo(courtX + courtWidth, courtY + courtHeight).stroke('#333');
+      
+      // Plot made shots (green dots)
+      if (analysis.shotChart.madeShots) {
+        doc.fillColor('#00ff00').opacity(0.6);
+        analysis.shotChart.madeShots.forEach(shot => {
+          const plotX = courtX + (shot.x / 94) * courtWidth;
+          const plotY = courtY + (shot.y / 50) * courtHeight;
+          doc.circle(plotX, plotY, 4).fill();
+        });
+      }
+      
+      // Plot missed shots (red dots)
+      if (analysis.shotChart.missedShots) {
+        doc.fillColor('#ff0000').opacity(0.6);
+        analysis.shotChart.missedShots.forEach(shot => {
+          const plotX = courtX + (shot.x / 94) * courtWidth;
+          const plotY = courtY + (shot.y / 50) * courtHeight;
+          doc.circle(plotX, plotY, 4).fill();
+        });
+      }
+      
+      doc.opacity(1);
+      
+      // Legend
+      y = courtY + courtHeight + 30;
+      doc.fillColor('#00ff00').circle(120, y, 5).fill();
+      doc.fillColor('#333').fontSize(10).text('Made shots', 135, y - 5);
+      doc.fillColor('#ff0000').circle(220, y, 5).fill();
+      doc.fillColor('#333').text('Missed shots', 235, y - 5);
+      
+      y += 30;
+      
+      // Hot zones
+      if (analysis.shotChart.hotZones && analysis.shotChart.hotZones.length > 0) {
+        doc.fillColor(orange).fontSize(14).font('Helvetica-Bold').text('🔥 HOT ZONES', 50, y);
+        y += 20;
+        analysis.shotChart.hotZones.forEach(zone => {
+          doc.fillColor('#333').fontSize(11).font('Helvetica').text(`• ${zone}`, 60, y);
+          y += 18;
+        });
+        y += 10;
+      }
+      
+      // Zone statistics
+      if (analysis.shotChart.zoneStats && analysis.shotChart.zoneStats.length > 0) {
+        doc.fillColor(orange).fontSize(14).font('Helvetica-Bold').text('ZONE BREAKDOWN', 50, y);
+        y += 20;
+        
+        analysis.shotChart.zoneStats.slice(0, 6).forEach(stat => {
+          doc.fillColor('#333').fontSize(10).font('Helvetica')
+            .text(`${stat.zone}: ${stat.made}/${stat.attempts} (${stat.percentage}%)`, 60, y);
+          y += 18;
+        });
+      }
+    } else {
+      doc.fillColor(gray).fontSize(12).text('No shot data available', 50, y);
+    }
+    
+    // ===== PAGE 4: GAME PLAN & PRACTICE =====
     doc.addPage();
     y = 50;
     
@@ -552,34 +1049,61 @@ async function generatePDF(report, tempDir) {
     
     y = 80;
     
+    // Offensive Keys
     doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('OFFENSIVE KEYS', 50, y);
     y += 25;
     analysis.recommendations.offensive.forEach(rec => {
       doc.fillColor('#333').fontSize(12).font('Helvetica').text(`• ${rec}`, 60, y);
-      y += 20;
+      y += 22;
     });
     
     y += 20;
+    
+    // Defensive Keys
     doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('DEFENSIVE KEYS', 50, y);
     y += 25;
     analysis.recommendations.defensive.forEach(rec => {
       doc.fillColor('#333').fontSize(12).font('Helvetica').text(`• ${rec}`, 60, y);
-      y += 20;
+      y += 22;
     });
     
     y += 20;
-    doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('PRACTICE FOCUS', 50, y);
-    y += 25;
-    analysis.recommendations.practice.forEach(rec => {
-      doc.fillColor('#333').fontSize(12).font('Helvetica').text(`• ${rec}`, 60, y);
-      y += 20;
-    });
     
-    // Footer
+    // BLOB Defense
+    if (analysis.blobPlays && analysis.blobPlays.detected) {
+      doc.rect(50, y, 512, 60).fill('#fff3cd');
+      doc.fillColor('#856404').fontSize(12).font('Helvetica-Bold')
+        .text('⚠️ BASELINE OUT OF BOUNDS ALERT', 60, y + 10);
+      doc.fontSize(10).font('Helvetica')
+        .text(analysis.blobPlays.recommendation, 60, y + 28, { width: 490 });
+      y += 70;
+    }
+    
+    // Practice Plans
+    if (analysis.practicePlans && analysis.practicePlans.drills) {
+      doc.fillColor(orange).fontSize(16).font('Helvetica-Bold').text('PRACTICE PLAN', 50, y);
+      y += 25;
+      
+      analysis.practicePlans.drills.forEach(drill => {
+        if (y > 680) {
+          doc.addPage();
+          y = 50;
+        }
+        
+        doc.fillColor('#333').fontSize(12).font('Helvetica-Bold').text(drill.name, 60, y);
+        doc.fontSize(10).fillColor(gray).text(`Duration: ${drill.duration}`, 60, y + 16);
+        doc.fontSize(10).fillColor('#333').font('Helvetica').text(drill.description, 60, y + 30, { width: 490 });
+        y += 60;
+      });
+    }
+    
+    // Footer on all pages
     const pages = doc.bufferedPageRange();
     for (let i = 0; i < pages.count; i++) {
       doc.switchToPage(i);
-      doc.fontSize(9).fillColor('#999').text('Generated by CoachIQ', 50, 750, { width: 512, align: 'center' });
+      doc.fontSize(9).fillColor('#999')
+        .text('Generated by CoachIQ - AI Basketball Scouting', 50, 750, { width: 512, align: 'center' });
+      doc.fontSize(8).text(new Date().toLocaleDateString(), 50, 762, { width: 512, align: 'center' });
     }
     
     doc.end();
