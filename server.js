@@ -54,7 +54,7 @@ app.get('/health', (req, res) => {
     status: 'ok', 
     timestamp: new Date().toISOString(),
     service: 'CoachIQ Backend',
-    version: '1.0.0'
+    version: '1.1.0'
   });
 });
 
@@ -98,13 +98,14 @@ app.post('/api/email/inbound', upload.none(), async (req, res) => {
       subject = parsed.subject || '';
       body = parsed.text || parsed.html || '';
     } else {
-      console.log('Request body:', JSON.stringify(req.body).substring(0, 500));
+      console.log('Request body keys:', Object.keys(req.body));
       return res.status(200).json({ status: 'unknown_format' });
     }
     
     console.log(`📧 From: ${fromEmail}`);
     console.log(`📧 Subject: ${subject}`);
-    console.log(`📧 Body preview: ${body.substring(0, 200)}...`);
+    console.log(`📧 Body length: ${body.length} chars`);
+    console.log(`📧 Body preview: ${body.substring(0, 300)}...`);
     
     // Extract video URL from email body
     const videoUrl = extractVideoUrl(body);
@@ -121,9 +122,9 @@ app.post('/api/email/inbound', upload.none(), async (req, res) => {
             <p style="color: #666;">We couldn't find a video link in your email.</p>
             <p style="color: #666;">Please reply with a link from:</p>
             <ul style="color: #666;">
+              <li><strong>Hudl</strong> - Use the "Download" feature, then forward the download email</li>
+              <li><strong>Google Drive</strong> - Upload video, share link</li>
               <li><strong>YouTube</strong> - youtube.com/watch?v=...</li>
-              <li><strong>Google Drive</strong> - drive.google.com/file/d/...</li>
-              <li><strong>Hudl</strong> - hudl.com/video/...</li>
             </ul>
             <p style="color: #666;">Just paste the URL in your email body and we'll analyze it!</p>
           </div>
@@ -133,6 +134,7 @@ app.post('/api/email/inbound', upload.none(), async (req, res) => {
     }
     
     console.log(`🔗 Found video URL: ${videoUrl}`);
+    console.log(`🔗 URL length: ${videoUrl.length}`);
     
     // Create report
     const reportId = uuidv4();
@@ -175,7 +177,7 @@ app.post('/api/email/inbound', upload.none(), async (req, res) => {
           </p>
           <div style="background: white; border-left: 4px solid #FF6B35; padding: 15px; margin: 20px 0;">
             <p style="margin: 0; color: #666;">
-              ⏱️ <strong>Expected time:</strong> 5-15 minutes<br>
+              ⏱️ <strong>Expected time:</strong> 10-20 minutes for full game analysis<br>
               📧 We'll email you the PDF report when ready!
             </p>
           </div>
@@ -327,11 +329,11 @@ async function processVideoAnalysis(reportId) {
     await fs.mkdir(tempDir, { recursive: true });
     
     // Step 1: Download video
-    updateReport(reportId, 'downloading', '📥 Downloading video...');
+    updateReport(reportId, 'downloading', '📥 Downloading video (this may take a few minutes for large files)...');
     const videoPath = await downloadVideo(report.videoUrl, tempDir);
     
-    // Step 2: Extract frames
-    updateReport(reportId, 'extracting', '🎞️ Extracting key frames...');
+    // Step 2: Extract frames from ENTIRE video
+    updateReport(reportId, 'extracting', '🎞️ Extracting key frames from full game...');
     const frames = await extractFrames(videoPath, tempDir);
     
     // Step 3: Analyze with Claude
@@ -394,8 +396,8 @@ async function processVideoAnalysis(reportId) {
             </div>
             <p style="color: #666;">Please try again with:</p>
             <ul style="color: #666;">
-              <li>A shorter video (under 10 minutes works best)</li>
-              <li>A different video source (YouTube is most reliable)</li>
+              <li>Forward the Hudl download notification email directly to us</li>
+              <li>Or upload the video to Google Drive and share the link</li>
               <li>Make sure the video is publicly accessible</li>
             </ul>
           </div>
@@ -428,54 +430,59 @@ async function downloadVideo(url, tempDir) {
   const outputPath = path.join(tempDir, 'video.mp4');
   const source = detectVideoSource(url);
   
-  console.log(`📥 Downloading from ${source}...`);
+  console.log(`📥 Source detected: ${source}`);
+  console.log(`📥 Full URL: ${url}`);
   
   try {
     if (source === 'youtube') {
-      // Use yt-dlp for YouTube
+      console.log('📥 Downloading from YouTube...');
       await execAsync(
         `yt-dlp -f "best[height<=720][ext=mp4]/best[height<=720]/best" --no-playlist -o "${outputPath}" "${url}"`,
-        { timeout: 600000 } // 10 minute timeout
+        { timeout: 600000 }
       );
+      
     } else if (source === 'google_drive') {
-      // Use gdown for Google Drive
+      console.log('📥 Downloading from Google Drive...');
       const fileId = extractGoogleDriveId(url);
       if (!fileId) throw new Error('Could not extract Google Drive file ID');
       await execAsync(
         `gdown --id ${fileId} -O "${outputPath}"`,
-        { timeout: 600000 }
+        { timeout: 1800000 } // 30 min timeout for large files
       );
-    } else if (source === 'hudl') {
+      
+    } else if (source === 'hudl' || source === 'hudl_direct') {
       // Check if it's a Hudl download link with direct MP4 URL
       const directUrl = extractHudlDirectUrl(url);
+      
       if (directUrl) {
-        console.log(`📥 Found direct Hudl MP4 URL, downloading first 15 minutes...`);
-        // Download with curl, limit to ~500MB or 15 minutes of video
-        // Use ffmpeg to download only first 15 minutes
+        console.log(`📥 Found direct Hudl MP4 URL!`);
+        console.log(`📥 Direct URL: ${directUrl}`);
+        // Download the full video with curl
         await execAsync(
-          `curl -L -o "${outputPath}" --max-filesize 2147483648 "${directUrl}"`,
-          { timeout: 1200000 } // 20 minute timeout for large files
+          `curl -L -o "${outputPath}" "${directUrl}"`,
+          { timeout: 3600000 } // 60 min timeout for large files
         );
       } else {
-        // Try yt-dlp for regular Hudl video pages
+        console.log('📥 No direct URL found, trying yt-dlp...');
         try {
           await execAsync(
             `yt-dlp -f "best[height<=720]" -o "${outputPath}" "${url}"`,
             { timeout: 600000 }
           );
         } catch (e) {
-          throw new Error('Hudl video could not be downloaded. Please use the Hudl "Download" feature and share the download link, or upload to Google Drive.');
+          throw new Error('Hudl video could not be downloaded. Please forward the Hudl download notification email directly to us, or upload the video to Google Drive.');
         }
       }
+      
     } else if (source === 'direct_mp4') {
-      // Direct MP4 URL
       console.log(`📥 Downloading direct MP4 URL...`);
       await execAsync(
-        `curl -L -o "${outputPath}" --max-filesize 2147483648 "${url}"`,
-        { timeout: 1200000 }
+        `curl -L -o "${outputPath}" "${url}"`,
+        { timeout: 3600000 }
       );
+      
     } else {
-      // Generic attempt with yt-dlp
+      console.log('📥 Trying generic download with yt-dlp...');
       await execAsync(
         `yt-dlp -f "best[height<=720]" -o "${outputPath}" "${url}"`,
         { timeout: 600000 }
@@ -489,22 +496,8 @@ async function downloadVideo(url, tempDir) {
     }
     
     const sizeMB = stats.size / 1024 / 1024;
-    console.log(`✅ Downloaded: ${sizeMB.toFixed(1)} MB`);
-    
-    // If file is very large (>1GB), trim to first 15 minutes
-    if (sizeMB > 1000) {
-      console.log(`📏 Large file detected, trimming to first 15 minutes...`);
-      const trimmedPath = path.join(tempDir, 'video_trimmed.mp4');
-      await execAsync(
-        `ffmpeg -i "${outputPath}" -t 900 -c copy "${trimmedPath}"`,
-        { timeout: 300000 }
-      );
-      // Replace original with trimmed
-      await fs.unlink(outputPath);
-      await fs.rename(trimmedPath, outputPath);
-      const newStats = await fs.stat(outputPath);
-      console.log(`✅ Trimmed to: ${(newStats.size / 1024 / 1024).toFixed(1)} MB`);
-    }
+    const sizeGB = sizeMB / 1024;
+    console.log(`✅ Downloaded: ${sizeGB > 1 ? sizeGB.toFixed(2) + ' GB' : sizeMB.toFixed(1) + ' MB'}`);
     
     return outputPath;
     
@@ -518,36 +511,67 @@ async function downloadVideo(url, tempDir) {
  * Extract direct MP4 URL from Hudl download/notification links
  */
 function extractHudlDirectUrl(url) {
-  // Check for forward parameter in Hudl notification links
-  // Example: https://www.hudl.com/notifications-tracking/...?forward=https%3a%2f%2fvtemp.hudl.com%2f...%2f.mp4
+  console.log('🔍 Checking for Hudl direct URL...');
+  
   try {
-    const urlObj = new URL(url);
-    const forwardParam = urlObj.searchParams.get('forward');
-    if (forwardParam) {
-      const decodedUrl = decodeURIComponent(forwardParam);
-      if (decodedUrl.includes('.mp4') || decodedUrl.includes('vtemp.hudl.com')) {
-        return decodedUrl;
+    // Method 1: Check for 'forward' parameter in URL
+    if (url.includes('forward=')) {
+      const forwardMatch = url.match(/forward=([^&\s]+)/);
+      if (forwardMatch) {
+        const decoded = decodeURIComponent(forwardMatch[1]);
+        console.log(`🔍 Found forward param: ${decoded.substring(0, 100)}...`);
+        if (decoded.includes('.mp4') || decoded.includes('vtemp.hudl.com')) {
+          return decoded;
+        }
       }
     }
     
-    // Check if URL itself is a direct vtemp link
-    if (url.includes('vtemp.hudl.com') && url.includes('.mp4')) {
-      return url;
+    // Method 2: Use URL parser
+    try {
+      const urlObj = new URL(url);
+      const forwardParam = urlObj.searchParams.get('forward');
+      if (forwardParam) {
+        const decodedUrl = decodeURIComponent(forwardParam);
+        console.log(`🔍 Parsed forward param: ${decodedUrl.substring(0, 100)}...`);
+        if (decodedUrl.includes('.mp4') || decodedUrl.includes('vtemp.hudl.com')) {
+          return decodedUrl;
+        }
+      }
+    } catch (e) {
+      console.log('URL parsing failed, trying regex...');
     }
+    
+    // Method 3: Check if URL itself contains vtemp
+    if (url.includes('vtemp.hudl.com')) {
+      const vtempMatch = url.match(/(https?:\/\/vtemp\.hudl\.com[^\s<>"]*\.mp4[^\s<>"]*)/);
+      if (vtempMatch) {
+        return vtempMatch[1];
+      }
+    }
+    
+    // Method 4: Look for any .mp4 URL in the string
+    const mp4Match = url.match(/(https?:\/\/[^\s<>"]*\.mp4[^\s<>"]*)/);
+    if (mp4Match) {
+      console.log(`🔍 Found MP4 URL: ${mp4Match[1].substring(0, 100)}...`);
+      return mp4Match[1];
+    }
+    
   } catch (e) {
-    console.log('Could not parse Hudl URL:', e.message);
+    console.log('Could not extract Hudl URL:', e.message);
   }
   
   return null;
 }
 
 function detectVideoSource(url) {
+  if (!url) return 'unknown';
+  
   if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
   if (url.includes('drive.google.com')) return 'google_drive';
+  if (url.includes('vtemp.hudl.com')) return 'hudl_direct';
   if (url.includes('hudl.com')) return 'hudl';
   if (url.includes('vimeo.com')) return 'vimeo';
-  if (url.includes('vtemp.hudl.com')) return 'hudl';
-  if (url.endsWith('.mp4') || url.includes('.mp4?')) return 'direct_mp4';
+  if (url.includes('.mp4')) return 'direct_mp4';
   return 'unknown';
 }
 
@@ -566,33 +590,36 @@ function extractGoogleDriveId(url) {
 }
 
 // ============================================
-// FRAME EXTRACTION
+// FRAME EXTRACTION - SAMPLES ENTIRE VIDEO
 // ============================================
 async function extractFrames(videoPath, tempDir) {
   const framesDir = path.join(tempDir, 'frames');
   await fs.mkdir(framesDir, { recursive: true });
   
-  // Get video duration first
-  let duration = 300; // default 5 minutes
+  // Get video duration
+  let duration = 600; // default 10 minutes
   try {
     const { stdout } = await execAsync(
       `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
     );
-    duration = parseFloat(stdout) || 300;
+    duration = parseFloat(stdout) || 600;
   } catch (e) {
     console.log('Could not get duration, using default');
   }
   
-  // Calculate frame interval (aim for ~30-40 frames)
-  const targetFrames = 35;
-  const interval = Math.max(5, Math.floor(duration / targetFrames));
+  // Calculate frame interval to sample ENTIRE video
+  // Aim for 35-40 frames spread across the full game
+  const targetFrames = 40;
+  const interval = Math.max(10, Math.floor(duration / targetFrames));
   
-  console.log(`🎞️ Video duration: ${Math.round(duration)}s, extracting frame every ${interval}s`);
+  const durationMin = Math.round(duration / 60);
+  console.log(`🎞️ Video duration: ${durationMin} minutes`);
+  console.log(`🎞️ Extracting 1 frame every ${interval} seconds (${targetFrames} frames total)`);
   
-  // Extract frames
+  // Extract frames spread across entire video
   await execAsync(
-    `ffmpeg -i "${videoPath}" -vf "fps=1/${interval}" -frames:v 40 -q:v 2 "${framesDir}/frame_%03d.jpg"`,
-    { timeout: 120000 }
+    `ffmpeg -i "${videoPath}" -vf "fps=1/${interval}" -frames:v ${targetFrames} -q:v 2 "${framesDir}/frame_%03d.jpg"`,
+    { timeout: 300000 } // 5 min timeout for extraction
   );
   
   // Read and resize frames
@@ -608,13 +635,20 @@ async function extractFrames(videoPath, tempDir) {
       .jpeg({ quality: 80 })
       .toBuffer();
     
+    // Calculate timestamp for this frame
+    const frameNum = parseInt(file.match(/(\d+)/)[1]);
+    const timestamp = (frameNum - 1) * interval;
+    const minutes = Math.floor(timestamp / 60);
+    const seconds = timestamp % 60;
+    
     frames.push({
       filename: file,
+      timestamp: `${minutes}:${seconds.toString().padStart(2, '0')}`,
       base64: resized.toString('base64')
     });
   }
   
-  console.log(`✅ Extracted ${frames.length} frames`);
+  console.log(`✅ Extracted ${frames.length} frames spanning entire ${durationMin}-minute video`);
   return frames;
 }
 
@@ -639,17 +673,20 @@ async function analyzeWithClaude(frames, opponentName) {
         type: 'text',
         text: `You are an expert basketball scout analyzing game film of "${opponentName}".
 
-Analyze these ${batch.length} frames and for EACH frame identify:
-1. Defensive formation (man-to-man, 2-3 zone, 3-2 zone, 1-3-1 zone, 1-2-2 press, full court press, etc.)
-2. Offensive play/action being run (pick and roll, motion, horns, flex, isolation, fast break, etc.)
+These frames are from different points throughout the game (timestamps: ${batch.map(f => f.timestamp).join(', ')}).
+
+For EACH frame, identify:
+1. Defensive formation (man-to-man, 2-3 zone, 3-2 zone, 1-3-1 zone, 1-2-2 press, full court press, match-up zone, etc.)
+2. Offensive play/action (pick and roll, motion, horns, flex, isolation, fast break, post-up, dribble drive, etc.)
 3. Ball handler jersey number if visible
-4. Any shot attempt and location (paint, mid-range, 3-pointer, corner)
+4. Any shot attempt and location (paint, mid-range, 3-pointer, corner 3)
 5. Pace (transition/fast break or half-court set)
 
 Return ONLY valid JSON in this exact format:
 {
   "frames": [
     {
+      "timestamp": "0:00",
       "defense": "man-to-man",
       "offense": "pick and roll",
       "ballHandler": "#23",
@@ -677,7 +714,13 @@ Return ONLY valid JSON in this exact format:
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.frames) allResults.push(...parsed.frames);
+        if (parsed.frames) {
+          // Add timestamps from our frames
+          parsed.frames.forEach((f, idx) => {
+            if (batch[idx]) f.timestamp = batch[idx].timestamp;
+          });
+          allResults.push(...parsed.frames);
+        }
       }
     } catch (e) {
       console.error(`Batch ${batchNum} error:`, e.message);
@@ -1068,7 +1111,7 @@ async function sendReportEmail(to, opponentName, pdfBuffer) {
           <div style="padding: 30px; background: #f9f9f9;">
             <h2 style="color: #333; margin-top: 0;">Your Scouting Report is Ready! 📋</h2>
             <p style="color: #666; font-size: 16px; line-height: 1.6;">
-              We've completed the analysis for <strong style="color: #FF6B35;">${opponentName}</strong>.
+              We've completed the full-game analysis for <strong style="color: #FF6B35;">${opponentName}</strong>.
             </p>
             <div style="background: white; border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; margin: 20px 0;">
               <h3 style="color: #FF6B35; margin-top: 0; font-size: 16px;">📎 PDF Report Attached</h3>
@@ -1078,6 +1121,7 @@ async function sendReportEmail(to, opponentName, pdfBuffer) {
                 <li>Top offensive plays</li>
                 <li>Key players to watch</li>
                 <li>Game plan recommendations</li>
+                <li>Practice focus areas</li>
               </ul>
             </div>
             <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 25px 0;">
@@ -1119,46 +1163,59 @@ async function sendReportEmail(to, opponentName, pdfBuffer) {
 // HELPER FUNCTIONS
 // ============================================
 function extractVideoUrl(text) {
-  // Clean up the text
-  const cleanText = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  // Clean up text but preserve URL special characters
+  let cleanText = text
+    .replace(/<[^>]*>/g, ' ')  // Remove HTML tags
+    .replace(/\r\n/g, ' ')     // Replace line breaks with spaces
+    .replace(/\n/g, ' ')       // Replace newlines
+    .replace(/\s+/g, ' ');     // Collapse whitespace
   
+  console.log('🔍 Searching for video URL in text...');
+  
+  // Pattern specifically for Hudl notification/download links (highest priority)
+  const hudlNotificationPattern = /https?:\/\/(?:www\.)?hudl\.com\/notifications-tracking\/[^\s<>"]+/gi;
+  const hudlMatches = cleanText.match(hudlNotificationPattern);
+  if (hudlMatches && hudlMatches.length > 0) {
+    // Get the longest match (most complete URL)
+    const longestMatch = hudlMatches.reduce((a, b) => a.length > b.length ? a : b);
+    console.log(`🔍 Found Hudl notification URL (${longestMatch.length} chars)`);
+    return longestMatch.replace(/[.,;]$/, '');
+  }
+  
+  // Pattern for direct vtemp.hudl.com URLs
+  const vtempPattern = /https?:\/\/vtemp\.hudl\.com\/[^\s<>"]+/gi;
+  const vtempMatches = cleanText.match(vtempPattern);
+  if (vtempMatches && vtempMatches.length > 0) {
+    const longestMatch = vtempMatches.reduce((a, b) => a.length > b.length ? a : b);
+    console.log(`🔍 Found Hudl vtemp URL (${longestMatch.length} chars)`);
+    return longestMatch.replace(/[.,;]$/, '');
+  }
+  
+  // Other patterns in priority order
   const patterns = [
+    // Google Drive
+    /https?:\/\/drive\.google\.com\/file\/d\/[\w-]+[^\s<>"]*/gi,
+    /https?:\/\/drive\.google\.com\/open\?id=[\w-]+/gi,
     // YouTube
     /https?:\/\/(?:www\.)?youtube\.com\/watch\?v=[\w-]+/gi,
     /https?:\/\/youtu\.be\/[\w-]+/gi,
-    /https?:\/\/(?:www\.)?youtube\.com\/embed\/[\w-]+/gi,
-    // Google Drive
-    /https?:\/\/drive\.google\.com\/file\/d\/[\w-]+/gi,
-    /https?:\/\/drive\.google\.com\/open\?id=[\w-]+/gi,
-    // Hudl download/notification links (with forward parameter)
-    /https?:\/\/(?:www\.)?hudl\.com\/notifications-tracking\/[^\s<>"]+/gi,
-    // Hudl direct temp video links
-    /https?:\/\/vtemp\.hudl\.com\/[^\s<>"]+\.mp4[^\s<>"]*/gi,
     // Regular Hudl video pages
     /https?:\/\/(?:www\.)?hudl\.com\/video\/[\w\/-]+/gi,
     /https?:\/\/(?:www\.)?hudl\.com\/v\/[\w]+/gi,
-    // Direct MP4 links
+    // Direct MP4
     /https?:\/\/[^\s<>"]+\.mp4[^\s<>"]*/gi,
-    // Generic URL as fallback
-    /https?:\/\/[^\s<>"]+/gi
   ];
   
   for (const pattern of patterns) {
     const matches = cleanText.match(pattern);
-    if (matches) {
-      // Return the first video URL found
-      for (const url of matches) {
-        // Skip non-video URLs
-        if (url.includes('unsubscribe') || url.includes('mailto:')) continue;
-        if (url.includes('youtube') || url.includes('youtu.be') || 
-            url.includes('hudl') || url.includes('drive.google') ||
-            url.includes('vimeo') || url.includes('.mp4')) {
-          return url.replace(/[.,;]$/, ''); // Remove trailing punctuation
-        }
-      }
+    if (matches && matches.length > 0) {
+      const url = matches[0].replace(/[.,;]$/, '');
+      console.log(`🔍 Found URL: ${url.substring(0, 80)}...`);
+      return url;
     }
   }
   
+  console.log('🔍 No video URL found');
   return null;
 }
 
@@ -1169,6 +1226,7 @@ function cleanOpponentName(subject) {
     .replace(/^scout(ing)?\s*(report)?:?\s*/gi, '')
     .replace(/^analyze:?\s*/gi, '')
     .replace(/^video:?\s*/gi, '')
+    .replace(/^game\s*film:?\s*/gi, '')
     .trim();
   
   // Capitalize first letter of each word
