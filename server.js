@@ -29,21 +29,27 @@ const execAsync = promisify(exec);
 // Initialize Express
 const app = express();
 
-// CORS - Allow requests from your frontend domains
-app.use(cors({
-  origin: [
-    'https://coachiq.netlify.app',
-    'https://coachiq.vercel.app', 
-    'http://localhost:3000',
-    'http://localhost:8080',
-    'http://127.0.0.1:3000',
-    /\.netlify\.app$/,
-    /\.vercel\.app$/
-  ],
+// CORS Configuration
+// For production, you should restrict origins to your specific domains
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Allow all origins for now - CHANGE THIS IN PRODUCTION
+    // In production, check if origin is in your whitelist
+    callback(null, true);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  exposedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
