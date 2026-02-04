@@ -12,8 +12,7 @@ const multer = require('multer');
 const { Resend } = require('resend');
 
 const app = express();
-app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization", "Accept"], credentials: false }));
-app.options("*", cors());
+app.use(cors());
 app.use(express.json({ limit: '100mb' }));
 
 // Configure multer
@@ -778,54 +777,6 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     },
     "mostValuableAspect": "SINGLE MOST IMPORTANT THING - What you MUST stop to beat them"
   },
-
-  // ============================================
-  // NEW FEATURES: Shot Chart, Starting 5, OOB, Primary Handler
-  // ============================================
-  "shotChartAnalysis": {
-    "shots": [],
-    "zoneStatistics": {
-      "paint": { "attempts": 0, "made": 0, "percentage": 0 },
-      "leftCorner": { "attempts": 0, "made": 0, "percentage": 0 },
-      "rightCorner": { "attempts": 0, "made": 0, "percentage": 0 },
-      "leftWing": { "attempts": 0, "made": 0, "percentage": 0 },
-      "rightWing": { "attempts": 0, "made": 0, "percentage": 0 },
-      "topOfKey": { "attempts": 0, "made": 0, "percentage": 0 }
-    },
-    "hotZones": [],
-    "coldZones": [],
-    "preferredShootingAreas": ""
-  },
-
-  "startingFiveAnalysis": {
-    "players": []
-  },
-
-  "outOfBoundsPlays": {
-    "baselineOutOfBounds": {
-      "frequency": "",
-      "commonSets": [],
-      "tendencies": ""
-    },
-    "sidelineOutOfBounds": {
-      "frequency": "",
-      "commonSets": [],
-      "tendencies": ""
-    }
-  },
-
-  "primaryBallHandler": {
-    "identification": {
-      "jerseyNumber": "",
-      "name": "",
-      "possessionPercentage": 0
-    },
-    "ballHandlingTendencies": {},
-    "offensiveInitiation": {},
-    "impactOnTeam": {},
-    "defensiveStrategy": {}
-  },
-
 
   "offensiveSetTracking": {
     "totalPossessionsObserved": 45,
