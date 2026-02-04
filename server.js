@@ -1,1655 +1,2469 @@
-// CoachIQ Backend Server - COMPREHENSIVE ANALYSIS
-// All offensive and defensive sets for youth to pro levels
-
-const express = require('express');
-const cors = require('cors');
-const Anthropic = require('@anthropic-ai/sdk');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const multer = require('multer');
-const { Resend } = require('resend');
-
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '100mb' }));
-
-// Configure multer
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = '/tmp/coachiq_uploads';
-        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => cb(null, `${Date.now()}_${uuidv4()}_${file.originalname}`)
-});
-const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 * 1024 } });
-
-// Initialize services
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const resend = new Resend(process.env.RESEND_API_KEY);
-
-// Storage
-const reports = new Map();
-const users = new Map();
-const uploadSessions = new Map();
-
-// ===========================================
-// COMPREHENSIVE BASKETBALL KNOWLEDGE BASE
-// ===========================================
-
-const BASKETBALL_KNOWLEDGE = `
-## COMPREHENSIVE BASKETBALL SCHEMES REFERENCE
-
-You must identify schemes from ANY skill level - youth, middle school, high school, college, or professional.
-Teams may run simplified or advanced versions. Identify what you actually see.
-
----
-
-### DEFENSIVE SCHEMES - COMPLETE LIST
-
-#### MAN-TO-MAN DEFENSE VARIATIONS
-1. **Straight Man-to-Man** - Each defender guards assigned player, no switching
-2. **Switching Man** - Defenders switch on all screens
-3. **Selective Switch** - Switch only on certain positions (1-3 switch, bigs don't switch)
-4. **Hedge & Recover** - Big shows on ball screen, guard fights over, big recovers
-5. **Hard Hedge/Blitz** - Both defenders trap ball handler on screens
-6. **Soft Hedge/Drop** - Big drops back to protect rim on ball screens
-7. **ICE/Down/Blue** - Force ball handler baseline, big walls off
-8. **Flat/Weak** - Force ball handler middle, contain with big
-9. **Switch All** - Switch every screen regardless of position
-10. **Show & Go Under** - Big shows, guard goes under screen (vs non-shooters)
-11. **Denial Man** - Deny all passes one pass away
-12. **Pack Line Defense** - Sagging man-to-man, help defenders inside imaginary line 16ft from basket
-13. **No-Middle/Funnel** - Force everything baseline
-14. **Shot Clock Situation** - Tight closeouts, pressure late in clock
-
-#### ZONE DEFENSE VARIATIONS
-1. **2-3 Zone** - Two guards up top, three along baseline (most common)
-2. **3-2 Zone** - Three across free throw line, two on blocks
-3. **1-2-2 Zone** - Point at top, two wings, two baseline
-4. **1-3-1 Zone** - Point, three across free throw line extended, one baseline
-5. **2-1-2 Zone** - Two guards, one middle, two baseline
-6. **Box-and-One** - Four in box zone, one chaser on best player
-7. **Triangle-and-Two** - Three in triangle zone, two chasers
-8. **Diamond-and-One** - Four in diamond, one chaser
-9. **Match-up Zone** - Zone principles but match up like man when ball enters
-10. **Amoeba Defense** - Shifting zone that morphs based on ball location
-11. **Syracuse 2-3** - Extended 2-3 with active trapping
-12. **Point Zone** - 1-3-1 variation with aggressive point defender
-
-#### PRESS DEFENSES (FULL COURT)
-1. **1-2-1-1 Full Court Press (Diamond)** - Trapping press
-2. **2-2-1 Full Court Press** - Two trappers, two interceptors, one safety
-3. **1-2-2 Full Court Press** - One point, staggered layers
-4. **2-1-2 Full Court Press** - Variation with middle rover
-5. **1-1-2-1 Press** - Run and jump style
-6. **Man-to-Man Press** - Full court man pressure
-7. **Run and Jump Press** - Defenders rotate and trap unpredictably
-8. **Scramble Press** - Chaotic trapping, gambling for steals
-9. **Contain Press** - Slow down, don't trap, just delay
-10. **Match-up Press** - Zone press that matches up
-
-#### HALF COURT PRESS/TRAPS
-1. **1-3-1 Half Court Trap** - Trap corners and wings
-2. **2-3 Half Court Trap** - Trap on wing entry
-3. **3/4 Court Press** - Pick up at free throw line extended
-4. **Soft Press** - Delay without trapping
-
-#### JUNK/COMBINATION DEFENSES
-1. **Box-and-One** - Box zone + man on star player
-2. **Triangle-and-Two** - Triangle zone + man on two best players
-3. **Diamond-and-One** - Diamond zone + chaser
-4. **Face Guard** - Complete denial on specific player
-5. **1-4 Soft** - One chaser, four passive zone
-6. **Scramble** - Switching/rotating chaos defense
-
----
-
-### OFFENSIVE SYSTEMS - COMPLETE LIST
-
-#### MOTION OFFENSES
-1. **5-Out Motion** - All five players on perimeter, drive and kick
-2. **4-Out 1-In Motion** - Four perimeter, one post player
-3. **3-Out 2-In Motion** - Three guards, two post players
-4. **Dribble Drive Motion (DDM)** - Attack gaps, kick to shooters
-5. **Read and React** - Layers of rules based on defense
-6. **Pace & Space** - Spread floor, quick decisions
-7. **Swing Offense** - Ball reversal triggers cuts
-8. **Blocker-Mover** - Bigs screen, guards cut (Warriors style)
-9. **Pass & Cut/Backdoor** - Give and go emphasis
-
-#### SET PLAYS & ACTIONS
-1. **Horns** - Two bigs at elbows, guard with ball at top
-2. **Horns Flare** - From horns, flare screen for shooter
-3. **Horns DHO** - Dribble handoff from horns
-4. **Flex Offense** - Baseline screens, flex cuts
-5. **UCLA Cut** - Guard cuts off high post to basket
-6. **Shuffle Offense** - Continuous shuffle cuts
-7. **Wheel Offense** - Continuous motion with wheel action
-8. **Princeton Offense** - Backdoor cuts, chin series
-9. **Triangle Offense** - Triangle spacing, post-ups
-10. **High-Low Offense** - Big at elbow, big on block
-11. **Pick and Roll (PnR)** - Ball screen with roll
-12. **Pick and Pop** - Ball screen with pop to perimeter
-13. **Spain Pick and Roll** - PnR with back screen on roll defender
-14. **Step-Up Screen** - Big steps up to screen
-15. **Drag Screen** - Screen in transition
-16. **Side Pick and Roll** - Ball screen on wing
-17. **Elbow Series** - Actions from elbow entry
-18. **Floppy** - Shooter chooses which screen to use
-19. **Iverson Cut** - Guard cuts across two bigs at elbows
-20. **Zipper Cut** - Cut up from block off screen
-21. **Hammer Action** - Baseline out of bounds play, skip to corner
-22. **Pistol/21 Series** - DHO into PnR
-23. **Chicago Action** - Pin down into handoff
-24. **Veer Action** - Guard drives at big, handoff or reject
-25. **Spread Pick and Roll** - PnR with floor spread
-26. **Empty/Clear** - Clear one side for isolation
-27. **DHO (Dribble Handoff)** - Handoff action
-28. **Pin Down** - Screen down for shooter
-29. **Flare Screen** - Screen away from ball for shooter
-30. **Back Screen** - Screen from behind for layup cut
-31. **Cross Screen** - Screen across the lane
-32. **Down Screen** - Screen toward baseline
-33. **Ball Screen** - Screen on the ball
-34. **Ghost Screen** - Fake screen, slip
-35. **Stagger Screens** - Two consecutive screens
-36. **Double Stagger** - Two screeners
-37. **Elevator Doors** - Two bigs close together, cutter between
-
-#### POST-UP OFFENSES
-1. **High Post Offense** - Entry to elbow, cuts off post
-2. **Low Post Offense** - Entry to block, work inside
-3. **Princeton Back Door** - Post at elbow, guards backdoor
-4. **Split Action** - Post catches, guards split cut
-5. **Duck In** - Post seals, quick entry
-
-#### TRANSITION OFFENSES
-1. **Primary Break** - Outlet, fill lanes, attack
-2. **Secondary Break** - Quick hitter after primary fails
-3. **Numbered Break** - Players have assigned spots (1 rim runs, etc.)
-4. **Drag Screen Break** - Ball screen in transition
-5. **Early Offense** - Set actions before defense sets
-6. **Run and Gun** - Push pace constantly
-7. **7 Seconds or Less** - Quick shots in transition
-
-#### PRESS BREAK OFFENSES
-1. **1-4 Press Break** - One ball handler, four across
-2. **2-1-2 Press Break** - Two guards, release valve middle
-3. **1-2-2 Press Break** - Single guard, two wings
-4. **Numbered Press Break** - Players have specific jobs
-5. **Diamond Press Break** - 1-2-1-1 alignment
-
-#### ZONE OFFENSES
-1. **Overload** - Put more players on one side
-2. **1-3-1 Zone Offense** - Against 2-3 zone
-3. **4-1 Zone Offense** - Four high, one low
-4. **2-3 Zone Offense** - Match up against zone
-5. **Short Corner** - Player in short corner vs zone
-6. **High Post Flash** - Flash to high post vs zone
-7. **Ball Reversal** - Move ball side to side
-8. **Gap Shooting** - Find holes in zone
-
-#### OUT OF BOUNDS PLAYS
-1. **BLOB (Baseline Out of Bounds)** - Under own basket
-2. **SLOB (Sideline Out of Bounds)** - Sideline plays
-3. **Stack** - Players stacked together
-4. **Box** - Box formation
-5. **Line** - Players in a line
-6. **Across** - Cuts across the lane
-
-#### SPECIAL SITUATIONS
-1. **ATO (After Timeout)** - Set plays after timeout
-2. **EOG (End of Game)** - Last shot plays
-3. **EOQ (End of Quarter)** - End of period plays
-4. **Foul Game** - When intentionally fouling
-5. **Delay Game** - Holding ball with lead
-6. **Catch Up** - Quick shots when behind
-
----
-
-### SKILL LEVEL INDICATORS
-
-#### YOUTH/RECREATIONAL (Ages 8-12)
-- Basic man-to-man
-- Simple 2-3 zone
-- Motion concepts (pass & cut)
-- Limited ball screens
-- Basic press break
-
-#### MIDDLE SCHOOL (Ages 12-14)
-- Man-to-man with help concepts
-- Multiple zone looks
-- Basic set plays (horns, flex)
-- Introduction to ball screens
-- Half court traps
-
-#### HIGH SCHOOL (Ages 14-18)
-- All man-to-man coverages
-- Zone variations
-- Full press packages
-- Complete offensive playbooks
-- Situational plays (ATO, EOG)
-
-#### COLLEGE/PROFESSIONAL
-- Complex switching schemes
-- Advanced ball screen coverage
-- Multiple defensive looks per game
-- Intricate offensive systems
-- High-level reads and counters
-
----
-
-### WHAT TO LOOK FOR IN EACH FRAME
-
-1. **Player Positioning** - Where are the 5 players on each team?
-2. **Ball Location** - Where is the ball? Who has it?
-3. **Defensive Stance** - Are defenders in man or zone stance?
-4. **Spacing** - How is the floor spaced?
-5. **Screen Action** - Any screens being set?
-6. **Cuts** - Any players cutting?
-7. **Help Position** - Where are help defenders?
-8. **Post Position** - Where are the bigs?
-9. **Transition** - Is this fast break or half court?
-
----
-
-### ADVANCED ANALYTICS TO TRACK
-
-#### OFFENSIVE SET EFFICIENCY
-For each offensive set/play identified, track:
-- **Frequency**: How many times the set is run
-- **Points Generated**: Estimated points scored from this set
-- **Points Per Possession (PPP)**: Efficiency of the set
-- **Primary Beneficiary**: Which player benefits most from this set
-
-#### PLAYER-SPECIFIC SETS
-Track which offensive sets are designed for specific players:
-- Post-ups for bigs
-- Pick and roll for ball handlers
-- Pin downs/flares for shooters
-- Isolation plays for scorers
-
-#### PACE & POSSESSION METRICS
-- **Possessions Observed**: Count total offensive possessions
-- **Estimated Pace**: Project possessions per 40-minute game
-- **Average Possession Length**: How long they take per possession
-- **Shot Clock Usage**: Early (0-10 sec), Middle (10-20 sec), Late (20+ sec)
-
-#### BALL MOVEMENT METRICS
-- **Ball Reversals**: Number of times ball crosses the paint/lane
-- **Passes Per Possession**: Average number of passes before shot
-- **Skip Passes**: Long cross-court passes
-- **Touch Distribution**: How many players touch the ball per possession
-
-#### TRANSITION & TURNOVER METRICS
-- **Transition Frequency**: % of possessions in transition
-- **Transition Efficiency**: Points per transition possession
-- **Turnover-to-Score Rate**: When opponent turns it over, how often do they score?
-- **Live Ball vs Dead Ball Turnovers**: Which type leads to more opponent points?
-
-#### TEAM VALUE IDENTIFICATION
-Identify the MOST VALUABLE aspect of each team's game:
-- Is it their transition offense?
-- Their half-court execution?
-- A specific player?
-- Their defensive intensity?
-- Their rebounding?
-- Their ball movement?
-
----
-
-### ADVANCED ANALYTICS TO TRACK
-
-#### OFFENSIVE SET EFFICIENCY
-Track each offensive set with:
-- **Frequency** - How often they run it (% of possessions)
-- **Points Per Possession (PPP)** - Points scored when running this set
-- **Outcome** - Score, turnover, missed shot, foul drawn
-- **Primary Option** - Who the play is designed for
-- **Success Rate** - % of times the play achieves its goal
-
-#### PLAYER-SPECIFIC SETS
-Identify which offensive sets are run specifically for certain players:
-- Post-ups for specific bigs
-- Isolation plays for scorers
-- Pin-downs/screens for shooters
-- Pick-and-roll with specific ball handlers
-- Designed plays after timeouts for closers
-
-#### PACE & TEMPO METRICS
-- **Possessions per game estimate** - Based on pace of play observed
-- **Average possession length** - Seconds per possession
-- **Shot clock usage** - Early (0-10 sec), Middle (10-20 sec), Late (20-30+ sec)
-- **Transition frequency** - % of possessions in transition vs half-court
-- **Secondary break usage** - Do they run early offense before full set?
-
-#### BALL MOVEMENT ANALYTICS
-- **Reversals per possession** - How often ball goes side-to-side
-- **Passes before shot** - Average number of passes
-- **Drive-and-kick frequency** - Penetration creating open shots
-- **Skip pass usage** - Ball movement skipping one or more players
-- **Post entry frequency** - How often they feed the post
-
-#### TURNOVER ANALYSIS
-- **Live ball turnovers** - Steals that lead to fast breaks
-- **Dead ball turnovers** - Out of bounds, offensive fouls, violations
-- **Turnover conversion rate** - % of turnovers that become opponent scores
-- **Turnover-to-score speed** - How quickly turnovers become points
-- **High turnover situations** - When/where turnovers happen most
-
-#### TEAM VALUE IDENTIFICATION
-Identify the MOST VALUABLE aspects of a team's game:
-- **Offensive identity** - What makes them dangerous (3PT shooting, post play, transition, etc.)
-- **Go-to plays** - What they run when they NEED a bucket
-- **Defensive identity** - What makes them hard to score against
-- **X-factor** - The intangible that makes them win games
-- **Clutch tendencies** - What they do in close games
-
-`;
-
-// ===========================================
-// SYSTEM PROMPT
-// ===========================================
-
-const SYSTEM_PROMPT = `You are an elite basketball scout and analyst with 25+ years of experience from youth leagues to the NBA. You have worked at every level and understand how basketball is taught and played differently at each stage.
-
-Your expertise includes:
-- Youth basketball development and age-appropriate schemes
-- Middle school transition basketball
-- High school varsity tactics and state championship preparation
-- College basketball (all divisions)
-- Professional basketball (NBA, overseas, G-League)
-
-You can identify schemes at ANY skill level - from a basic youth motion offense to complex NBA switching schemes. You understand that:
-- Youth teams run simpler versions of concepts
-- Execution quality varies by skill level
-- The same "play" looks different at different levels
-- Terminology may vary by region and level
-
-${BASKETBALL_KNOWLEDGE}
-
-IMPORTANT RULES:
-1. Only identify what you can ACTUALLY SEE in the frames
-2. Don't fabricate jersey numbers or player names you can't read
-3. State your confidence level for each observation
-4. If you see a simplified version of a scheme, identify it appropriately
-5. Consider the apparent skill level when making identifications
-6. Provide actionable insights regardless of competition level`;
-
-// ===========================================
-// ANALYSIS PROMPT BUILDER
-// ===========================================
-
-function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo = null) {
-    // Build team identification section if teamInfo is provided
-    let teamIdentification = '';
-    if (teamInfo && teamInfo.opponent && teamInfo.yourTeam) {
-        teamIdentification = `
-## 🎽 CRITICAL: TEAM IDENTIFICATION
-
-**You MUST distinguish between the two teams using jersey colors:**
-
-| Team | Jersey Color | Role |
-|------|--------------|------|
-| **${teamInfo.opponent.name || opponentName}** | **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | ⚠️ **SCOUT THIS TEAM** - All analysis should focus on this team |
-| **${teamInfo.yourTeam.name || 'Opposing Team'}** | **${teamInfo.yourTeam.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | Ignore this team except to note how opponent defends them |
-
-**IMPORTANT INSTRUCTIONS:**
-- When analyzing OFFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's offensive sets, plays, and tendencies
-- When analyzing DEFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's defensive schemes and coverages
-- ONLY report on the team wearing **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** jerseys
-- In each frame, first identify which team has the ball by jersey color
-- Clearly label all observations with the jersey color for verification
-
----
-`;
-    } else {
-        teamIdentification = `
-## ⚠️ TEAM IDENTIFICATION
-
-No specific jersey colors were provided. Try to consistently identify one team to analyze throughout all frames. Look for consistent jersey colors/uniforms and focus your scouting report on ONE team's offense and defense.
-
----
-`;
-    }
-
-    return `# COMPREHENSIVE SCOUTING ANALYSIS
-
-**Opponent:** ${opponentName}
-**Frames:** ${frameCount}
-**Focus Areas:** ${analysisOptions.join(', ')}
-
----
-${teamIdentification}
-## INSTRUCTIONS
-
-Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
-
-**Remember: ONLY analyze the team wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} jerseys.**
-
-Use the comprehensive basketball knowledge provided to identify specific schemes, sets, and actions.
-
----
-
-## DEFENSIVE IDENTIFICATION CHECKLIST
-
-**Analyze the ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'OPPONENT'} jersey team's defense:**
-
-Look for and identify:
-
-### Base Defense
-- [ ] Is it man-to-man or zone?
-- [ ] If man: Straight, switching, pack line, denial?
-- [ ] If zone: 2-3, 3-2, 1-2-2, 1-3-1, match-up?
-- [ ] Any junk/combination defenses (box-and-one, triangle-and-two)?
-
-### On-Ball Defense
-- [ ] Pressure level: Full denial, 3/4, soft?
-- [ ] Force direction: Baseline, middle, sideline?
-- [ ] Stance: Low and active or standing up?
-
-### Ball Screen Coverage (if applicable)
-- [ ] Drop/Sag - Big stays back
-- [ ] Hedge/Show - Big jumps out then recovers
-- [ ] Hard Hedge/Blitz - Both defenders trap
-- [ ] Switch - Defenders switch assignments
-- [ ] ICE/Down - Force baseline, wall off
-- [ ] Flat/Weak - Force middle, contain
-- [ ] Under - Guard goes under screen
-- [ ] Over - Guard fights over screen
-
-### Help Defense
-- [ ] Are help defenders in gaps?
-- [ ] How many passes away do they help?
-- [ ] Do they rotate on drives?
-- [ ] Closeout technique?
-
-### Press Defense (if shown)
-- [ ] Full court or half court?
-- [ ] Man or zone press?
-- [ ] Trapping or contain?
-- [ ] Specific formation (1-2-1-1, 2-2-1, etc.)?
-
-### Transition Defense
-- [ ] How many get back?
-- [ ] Do they match up or protect paint first?
-- [ ] Any cherry-picking/leaking?
-
----
-
-## OFFENSIVE IDENTIFICATION CHECKLIST
-
-Look for and identify:
-
-### Base System
-- [ ] Motion offense (5-out, 4-out 1-in, 3-out 2-in)?
-- [ ] Set play based?
-- [ ] Dribble drive?
-- [ ] Post-oriented?
-- [ ] Princeton/backdoor?
-- [ ] Pick and roll heavy?
-
-### Specific Sets & Actions
-- [ ] Horns (bigs at elbows)?
-- [ ] Flex (baseline screens)?
-- [ ] UCLA cut (guard cuts off high post)?
-- [ ] Floppy (shooter choice)?
-- [ ] Iverson cut (across two elbows)?
-- [ ] Pin downs?
-- [ ] Dribble handoffs (DHO)?
-- [ ] Stagger screens?
-- [ ] Spain PnR (back screen on roll defender)?
-- [ ] Ghost/slip screens?
-
-### Spacing
-- [ ] 5-out (all perimeter)?
-- [ ] 4-out 1-in (one post)?
-- [ ] 3-out 2-in (two posts)?
-- [ ] Floor balance?
-
-### Ball Movement
-- [ ] Pass tempo (quick or slow)?
-- [ ] Reversals?
-- [ ] Skip passes?
-- [ ] Drive and kick?
-
-### Transition
-- [ ] Do they run in transition?
-- [ ] Primary break patterns?
-- [ ] Secondary/early offense?
-
-### Zone Offense (if applicable)
-- [ ] Overload one side?
-- [ ] High post flash?
-- [ ] Short corner?
-- [ ] Ball reversal?
-
----
-
-## ADVANCED ANALYTICS CHECKLIST
-
-### Offensive Set Efficiency
-For EACH set you identify, track:
-- [ ] How many times was it run?
-- [ ] Did it result in a score, miss, or turnover?
-- [ ] Who is the primary option on this play?
-- [ ] What percentage of possessions use this set?
-- [ ] Estimate points per possession for this set
-
-### Player-Specific Sets
-- [ ] Which plays are designed specifically for certain players?
-- [ ] Who gets ISO plays?
-- [ ] Who do they run pick and roll for?
-- [ ] Who gets screens set for them?
-- [ ] What is each key player's go-to move?
-
-### Pace & Tempo
-- [ ] How fast do they play? (estimate possessions per game)
-- [ ] How long are their possessions on average?
-- [ ] Do they shoot early, middle, or late in shot clock?
-- [ ] What % of possessions are transition vs half-court?
-- [ ] Do they push pace or control tempo?
-
-### Ball Movement Deep Dive
-- [ ] How many times per possession do they reverse the ball?
-- [ ] Average passes before a shot attempt?
-- [ ] Do they penetrate and kick frequently?
-- [ ] Do they use skip passes?
-- [ ] How often do they enter the post?
-- [ ] Does the ball stick with certain players?
-
-### Turnover Patterns
-- [ ] Are turnovers live ball (steals) or dead ball (violations)?
-- [ ] What % of turnovers become opponent scores?
-- [ ] Where/when do turnovers happen most?
-- [ ] What causes their turnovers?
-- [ ] How can you force turnovers against them?
-
-### Team Value Assessment
-- [ ] What is their SINGLE MOST VALUABLE offensive trait?
-- [ ] What makes them MOST DANGEROUS?
-- [ ] What is their go-to play when they NEED a bucket?
-- [ ] What do they do in CLUTCH situations?
-- [ ] What is the X-FACTOR that wins them games?
-- [ ] What MUST you stop to beat this team?
-
-### Set Frequency & Scoring (TRACK EVERY SET)
-For each offensive set identified, count:
-- [ ] How many times was this EXACT set run?
-- [ ] How many POINTS were scored from this set?
-- [ ] Calculate Points Per Possession for this set
-- [ ] Who is the PRIMARY beneficiary of this set?
-- [ ] What is the best way to DEFEND this set?
-
-Example tracking:
-- Flex: Run 8 times, scored 10 points = 1.25 PPP
-- Horns PnR: Run 12 times, scored 16 points = 1.33 PPP
-- Transition: Run 7 times, scored 10 points = 1.43 PPP
-
-### Ball Reversal Tracking
-- [ ] COUNT total ball reversals observed
-- [ ] Calculate reversals PER POSSESSION
-- [ ] Note IMPACT of reversals (better shots after reversal?)
-- [ ] Identify if reversals are part of their offense design or forced
-
-### Turnover-to-Score Conversion
-When you see a turnover, track:
-- [ ] Was it LIVE ball (steal) or DEAD ball (out of bounds)?
-- [ ] Did it result in OPPONENT SCORE?
-- [ ] How QUICKLY did score happen after turnover?
-- [ ] Calculate CONVERSION RATE (turnovers that become scores)
-
----
-
-## RESPONSE FORMAT
-
-Provide your analysis in this JSON structure. Be thorough and specific:
-
-\`\`\`json
-{
-  "skillLevel": {
-    "estimated": "youth | middle_school | high_school | college | professional",
-    "indicators": ["Why you believe this level"],
-    "confidence": 75
-  },
-
-  "paceAndTempo": {
-    "possessionsPerGameEstimate": 65,
-    "paceRating": 72,
-    "paceCategory": "slow | moderate | fast | very_fast",
-    "averagePossessionLength": "18 seconds",
-    "shotClockUsage": {
-      "early": 15,
-      "middle": 45,
-      "late": 40,
-      "description": "Patient team that works for good shots"
-    },
-    "transitionFrequency": {
-      "percentage": 22,
-      "style": "push_always | opportunistic | conservative",
-      "effectiveness": "How well they score in transition"
-    },
-    "tempoControl": "Do they speed up or slow down based on situation"
-  },
-
-  "offensiveSetEfficiency": {
-    "setBreakdown": [
-      {
-        "setName": "Horns Flare",
-        "timesRun": 12,
-        "frequency": 28,
-        "pointsScored": 14,
-        "pointsPerPossession": 1.17,
-        "outcomes": {
-          "scores": 6,
-          "missedShots": 4,
-          "turnovers": 1,
-          "foulsDrawn": 1
-        },
-        "successRate": 58,
-        "primaryOption": "#23 off the flare screen",
-        "notes": "Most effective when run to the right side"
-      }
-    ],
-    "mostEfficientSet": {
-      "name": "Pick and Roll with #23/#34",
-      "ppp": 1.24,
-      "whyItWorks": "Roll man finishes at rim, defense collapses"
-    },
-    "leastEfficientSet": {
-      "name": "Isolation for #11",
-      "ppp": 0.72,
-      "whyItFails": "Predictable, no secondary options"
-    }
-  },
-
-  "playerSpecificSets": [
-    {
-      "player": "#23 (Point Guard)",
-      "designedPlays": [
-        {
-          "setName": "High Pick and Roll",
-          "frequency": "35% of his possessions",
-          "effectiveness": "1.18 PPP",
-          "bestCounter": "ICE the ball screen, wall off"
-        },
-        {
-          "setName": "Isolation Left Wing",
-          "frequency": "15% of his possessions",
-          "effectiveness": "0.89 PPP",
-          "bestCounter": "Force right, no help needed"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoachIQ - AI Basketball Scouting</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏀</text></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --orange: #FF6B35;
+            --orange-dark: #E55A2B;
+            --dark: #0D1117;
+            --darker: #080B0F;
+            --accent: #00D4AA;
+            --accent-dark: #00B894;
+            --gray: #21262D;
+            --light-gray: #30363D;
+            --text: #E6EDF3;
+            --text-muted: #8B949E;
+            --success: #00D4AA;
+            --error: #FF6B6B;
+            --warning: #FFB400;
         }
-      ],
-      "goToMove": "Step-back three from right wing",
-      "comfortZone": "Right side of floor, top of key"
-    }
-  ],
 
-  "ballMovementAnalytics": {
-    "reversalsPerPossession": 1.8,
-    "reversalTendency": "heavy | moderate | light | rare",
-    "passesBeforeShot": 4.2,
-    "driveAndKick": {
-      "frequency": "How often they penetrate and kick",
-      "effectiveness": "Points generated from drive-kicks",
-      "primaryDrivers": ["#23", "#5"]
-    },
-    "skipPassUsage": {
-      "frequency": "How often they skip the ball",
-      "situations": "When they use skip passes",
-      "effectiveness": "Open shots generated"
-    },
-    "postEntryFrequency": {
-      "percentage": 18,
-      "primaryPostPlayers": ["#34", "#44"],
-      "postToPPP": 0.92
-    },
-    "ballMovementRating": "excellent | good | average | poor",
-    "stagnationTendency": "Does ball stick with certain players"
-  },
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
-  "turnoverAnalysis": {
-    "estimatedTurnoverRate": 14,
-    "turnoverTypes": {
-      "liveBall": {
-        "frequency": 60,
-        "description": "Steals leading to fast breaks"
-      },
-      "deadBall": {
-        "frequency": 40,
-        "description": "Out of bounds, charges, violations"
-      }
-    },
-    "turnoverConversion": {
-      "conversionRate": 72,
-      "description": "72% of their turnovers become opponent scores",
-      "averagePointsOffTurnover": 1.4,
-      "fastBreakAfterTurnover": "How quickly opponents score"
-    },
-    "highTurnoverSituations": [
-      {
-        "situation": "Entry passes to post",
-        "frequency": "Most common turnover",
-        "cause": "Weak entry passes, active hands on defense"
-      },
-      {
-        "situation": "Transition turnovers",
-        "frequency": "Second most common",
-        "cause": "Pushing pace too fast, poor decisions"
-      }
-    ],
-    "turnoverVulnerabilities": "When and how to force turnovers against them"
-  },
-
-  "teamValueIdentification": {
-    "offensiveIdentity": {
-      "primaryStrength": "Three-point shooting from corners",
-      "whatMakesThemDangerous": "Ball movement creates open 3s, 5 shooters",
-      "offensiveRating": 112,
-      "scoringDistribution": {
-        "paint": 38,
-        "midRange": 18,
-        "threePoint": 44
-      }
-    },
-    "defensiveIdentity": {
-      "primaryStrength": "Rim protection and shot blocking",
-      "whatMakesThemTough": "Length disrupts shots, force difficult finishes",
-      "defensiveRating": 105
-    },
-    "goToPlays": {
-      "needABucket": "Horns into high pick and roll for #23",
-      "lastShot": "Clear out ISO for #23 on right wing",
-      "afterTimeout": "Stagger screens for #11 three-pointer"
-    },
-    "xFactor": {
-      "description": "The intangible that wins them games",
-      "player": "Who is their X-factor",
-      "situation": "When they elevate their play"
-    },
-    "clutchTendencies": {
-      "closeGameStrategy": "What they do with lead vs trailing",
-      "finalMinutePlays": "Go-to actions in crunch time",
-      "freeThrowShooting": "Who shoots in pressure situations"
-    },
-    "mostValuableAspect": "SINGLE MOST IMPORTANT THING - What you MUST stop to beat them"
-  },
-
-  "offensiveSetTracking": {
-    "totalPossessionsObserved": 45,
-    "setBySetBreakdown": [
-      {
-        "setName": "Flex",
-        "timesRun": 8,
-        "pointsScored": 10,
-        "pointsPerPossession": 1.25,
-        "percentageOfPossessions": 18,
-        "outcomes": {
-          "madeBaskets": 4,
-          "missedShots": 3,
-          "turnovers": 1,
-          "foulsDrawn": 0
-        },
-        "primaryBeneficiary": "#23 - gets open on baseline cut",
-        "bestDefense": "Switch the down screen, front the cutter"
-      },
-      {
-        "setName": "Horns PnR",
-        "timesRun": 12,
-        "pointsScored": 16,
-        "pointsPerPossession": 1.33,
-        "percentageOfPossessions": 27,
-        "outcomes": {
-          "madeBaskets": 7,
-          "missedShots": 4,
-          "turnovers": 1,
-          "foulsDrawn": 2
-        },
-        "primaryBeneficiary": "#23 as ball handler, #34 as roll man",
-        "bestDefense": "ICE the ball screen, tag the roller"
-      }
-    ],
-    "mostRunSet": {
-      "name": "Horns PnR",
-      "frequency": "27% of possessions"
-    },
-    "mostEfficientSet": {
-      "name": "Transition",
-      "ppp": 1.45
-    },
-    "leastEfficientSet": {
-      "name": "Post Iso for #44",
-      "ppp": 0.67
-    }
-  },
-
-  "playerSetAssignments": [
-    {
-      "player": "#23 (Point Guard)",
-      "setsRunForThisPlayer": [
-        { "set": "High PnR", "frequency": 35, "ppp": 1.18 },
-        { "set": "ISO Left Wing", "frequency": 12, "ppp": 0.89 }
-      ],
-      "totalTouches": "Handles ball 68% of half-court possessions",
-      "mostEffectiveAction": "PnR going right, attack or kick"
-    },
-    {
-      "player": "#11 (Shooting Guard)",
-      "setsRunForThisPlayer": [
-        { "set": "Pin Down", "frequency": 22, "ppp": 1.08 },
-        { "set": "Floppy", "frequency": 15, "ppp": 1.12 }
-      ],
-      "totalTouches": "Catch and shoot specialist",
-      "mostEffectiveAction": "Coming off stagger screens"
-    }
-  ],
-
-  "paceAnalysis": {
-    "possessionsObserved": 45,
-    "videoLengthMinutes": 20,
-    "possessionsPer40Minutes": 90,
-    "estimatedPossessionsPerGame": 68,
-    "paceCategory": "moderate",
-    "paceRating": 72,
-    "averagePossessionLength": "16.5 seconds",
-    "shotClockBreakdown": {
-      "early0to10": { "percentage": 22, "ppp": 1.35 },
-      "middle10to20": { "percentage": 48, "ppp": 1.02 },
-      "late20plus": { "percentage": 30, "ppp": 0.78 }
-    },
-    "tempoNotes": "Push in transition but patient in half-court"
-  },
-
-  "ballMovementMetrics": {
-    "totalBallReversals": 67,
-    "reversalsPerPossession": 1.8,
-    "reversalImpact": "Shots after reversal: 48% vs 34% without",
-    "passesPerPossession": 4.2,
-    "skipPassFrequency": "12 skip passes observed",
-    "touchDistribution": {
-      "description": "Average 3.8 players touch ball per possession",
-      "ballDominantPlayers": ["#23 - 42% of touches", "#11 - 18% of touches"]
-    },
-    "stagnationWarning": "Ball sticks with #23 when play breaks down"
-  },
-
-  "turnoverToScoreAnalysis": {
-    "opponentTurnoversObserved": 8,
-    "turnoversConvertedToScores": 6,
-    "turnoverConversionRate": 75,
-    "averagePointsPerConversion": 1.67,
-    "conversionBreakdown": {
-      "liveBallTurnovers": {
-        "count": 5,
-        "convertedToScore": 5,
-        "conversionRate": 100,
-        "averageTimeToScore": "4.2 seconds"
-      },
-      "deadBallTurnovers": {
-        "count": 3,
-        "convertedToScore": 1,
-        "conversionRate": 33,
-        "averageTimeToScore": "12.5 seconds"
-      }
-    },
-    "transitionAfterTurnover": "Excellent - push hard after steals",
-    "keyInsight": "Force dead ball turnovers, don't gamble for steals"
-  },
-
-  "defense": {
-    "primary": {
-      "scheme": "Exact scheme name from the reference list",
-      "details": "Specific observations about how they run it",
-      "execution": "How well they execute (excellent/good/developing/poor)"
-    },
-    "secondary": {
-      "scheme": "Secondary scheme if observed",
-      "details": "When/why they use it",
-      "frequency": "Percentage of possessions"
-    },
-    "breakdown": [
-      {"name": "Scheme Name", "percentage": 70, "notes": "Specific details"}
-    ],
-    "manToMan": {
-      "observed": true,
-      "type": "straight | switching | pack_line | denial | other",
-      "onBall": {
-        "pressure": "full_denial | three_quarter | soft | varies",
-        "forceDirection": "baseline | middle | sideline | ball_handler_choice",
-        "stance": "Description of defensive stance"
-      },
-      "offBall": {
-        "positioning": "one_pass_deny | gap_help | sagging",
-        "helpSide": "How far off are help defenders"
-      }
-    },
-    "zone": {
-      "observed": true,
-      "type": "2-3 | 3-2 | 1-3-1 | 1-2-2 | match-up | other",
-      "aggressiveness": "passive | standard | aggressive | trapping",
-      "weakSpots": ["Areas the zone doesn't cover well"]
-    },
-    "ballScreenCoverage": {
-      "primary": "drop | hedge | hard_hedge | switch | ice | flat | under | over",
-      "secondary": "Alternative coverage used",
-      "bigTechnique": "How the screener's defender plays it",
-      "guardTechnique": "How the ball handler's defender plays it",
-      "rotations": "How others rotate"
-    },
-    "press": {
-      "observed": true,
-      "type": "full_court | three_quarter | half_court",
-      "formation": "1-2-1-1 | 2-2-1 | man | other",
-      "style": "trapping | contain | run_and_jump",
-      "triggers": "When they use it"
-    },
-    "transitionDefense": {
-      "priority": "match_up | protect_paint | scramble",
-      "numberBack": "typical number of players",
-      "conversion": "How quickly they convert"
-    },
-    "weaknesses": [
-      {
-        "weakness": "Specific defensive weakness",
-        "howToExploit": "Exactly how to attack it",
-        "playToRun": "Specific play or action to use"
-      }
-    ],
-    "strengths": ["Defensive strength 1", "Defensive strength 2"]
-  },
-
-  "offense": {
-    "primary": {
-      "system": "Exact system name from reference",
-      "details": "How they run it",
-      "execution": "How well they execute"
-    },
-    "secondary": {
-      "system": "Secondary approach",
-      "usage": "When they use it"
-    },
-    "spacing": {
-      "formation": "5-out | 4-out-1-in | 3-out-2-in | other",
-      "quality": "excellent | good | developing | poor",
-      "notes": "Spacing observations"
-    },
-    "setsAndActions": [
-      {
-        "name": "Exact set/action name",
-        "frequency": 25,
-        "description": "How they run it",
-        "primaryOption": "First look",
-        "secondaryOption": "Counter if defended",
-        "howToDefend": "Recommended defensive approach"
-      }
-    ],
-    "ballScreenActions": {
-      "frequency": "How often they use ball screens",
-      "types": ["pick_and_roll", "pick_and_pop", "spain", "drag", "side"],
-      "ballHandler": "Who typically handles",
-      "screener": "Who typically screens",
-      "reads": "What reads they make"
-    },
-    "postPlay": {
-      "frequency": "How often they post up",
-      "location": "block | elbow | short_corner",
-      "actions": "What they do from post"
-    },
-    "cuttingActions": [
-      {
-        "type": "UCLA | flex | backdoor | zipper | iverson | other",
-        "frequency": "How often",
-        "effectiveness": "How well they execute"
-      }
-    ],
-    "screeningActions": [
-      {
-        "type": "pin_down | flare | back_screen | cross | stagger | down | ball",
-        "frequency": "How often",
-        "purpose": "What it creates"
-      }
-    ],
-    "ballMovement": {
-      "rating": "excellent | good | average | poor",
-      "passesPerPossession": "estimated number",
-      "reversals": "How often they reverse",
-      "skipPasses": "Do they skip the ball",
-      "tempo": "quick | deliberate | mixed"
-    },
-    "transition": {
-      "frequency": "always | often | sometimes | rarely",
-      "style": "push_pace | controlled | secondary_focused",
-      "primaryBreak": "How they run primary",
-      "earlyOffense": "Early offense actions"
-    },
-    "zoneOffense": {
-      "observed": true,
-      "approach": "overload | high_post | ball_reversal | gap_attack",
-      "effectiveness": "How well they attack zones"
-    },
-    "outOfBounds": {
-      "blob": "Baseline out of bounds tendencies",
-      "slob": "Sideline out of bounds tendencies"
-    },
-    "weaknesses": [
-      {
-        "weakness": "Specific offensive weakness",
-        "howToExploit": "How to take advantage defensively"
-      }
-    ],
-    "strengths": ["Offensive strength 1", "Offensive strength 2"]
-  },
-
-  "keyPlayers": [
-    {
-      "identifier": "Jersey # or description",
-      "position": "PG | SG | SF | PF | C",
-      "role": "primary_ball_handler | scorer | screener | shooter | rim_protector | glue_guy",
-      "usage": "Estimated % of offense involvement",
-      "offensiveTendencies": {
-        "preferredHand": "right | left | both",
-        "favoriteSpots": ["Locations on floor"],
-        "goToMoves": ["Signature moves"],
-        "shootingAbility": "Shooting assessment",
-        "ballHandling": "Ball handling assessment",
-        "postGame": "Post game if applicable",
-        "offBall": "Off-ball movement quality"
-      },
-      "defensiveTendencies": {
-        "onBall": "On-ball defense quality",
-        "help": "Help defense quality",
-        "rebounding": "Rebounding effort"
-      },
-      "physicalProfile": "Size/athleticism observations",
-      "threatLevel": "high | medium | low",
-      "keyMatchup": "Who should guard them",
-      "notes": "Additional observations"
-    }
-  ],
-
-  "pace": {
-    "rating": 65,
-    "category": "very_slow | slow | average | fast | very_fast",
-    "description": "Detailed pace description",
-    "preferredStyle": "transition | half_court | balanced",
-    "shotClockUsage": "early | middle | late | varies",
-    "possessionLength": "Average possession estimate",
-    "factors": ["What affects their pace"]
-  },
-
-  "specialSituations": {
-    "afterTimeout": "ATO tendencies observed",
-    "endOfClock": "Late clock tendencies",
-    "endOfGame": "EOG situation tendencies",
-    "pressBreak": "How they break pressure",
-    "foulSituations": "Foul game tendencies"
-  },
-
-  "teamStrengths": [
-    {
-      "strength": "Team strength",
-      "evidence": "What you observed that shows this"
-    }
-  ],
-
-  "teamWeaknesses": [
-    {
-      "weakness": "Team weakness", 
-      "evidence": "What you observed",
-      "howToExploit": "How to take advantage"
-    }
-  ],
-
-  "recommendations": {
-    "offensiveGamePlan": {
-      "primaryStrategy": "Main approach to score against them",
-      "secondaryStrategy": "Backup approach",
-      "setsToRun": [
-        {
-          "set": "Specific set name",
-          "why": "Why this will work",
-          "keyReads": "What to look for"
+        body {
+            font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--darker);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
         }
-      ],
-      "actionsToUse": ["Specific actions that will be effective"],
-      "actionsToAvoid": ["What won't work against them"],
-      "tempoStrategy": "How to control pace",
-      "targetMatchups": ["Matchups to exploit"],
-      "avoidMatchups": ["Matchups to stay away from"]
-    },
-    "defensiveGamePlan": {
-      "recommendedScheme": "What defense to play",
-      "schemeDetails": "How to execute it",
-      "ballScreenCoverage": "How to defend their ball screens",
-      "postDefense": "How to defend their post game",
-      "keyAssignments": [
-        {
-          "offensive_player": "Who",
-          "defensive_assignment": "Who guards them",
-          "instructions": "How to guard them"
+
+        /* Navigation */
+        .nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 64px;
+            background: rgba(8, 11, 15, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--gray);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
         }
-      ],
-      "helpPrinciples": "Help defense instructions",
-      "transitionDefense": "How to defend their transition",
-      "pressConsiderations": "Whether to press and how"
-    },
-    "practiceEmphasis": [
-      {
-        "drill": "Specific drill name",
-        "purpose": "What it develops",
-        "duration": "How long to spend",
-        "coachingPoints": ["Key teaching points"],
-        "scoutTeamLook": "How scout team simulates opponent"
-      }
-    ],
-    "keysToVictory": [
-      "Key #1 with specific detail",
-      "Key #2 with specific detail",
-      "Key #3 with specific detail"
-    ],
-    "warningPoints": [
-      "What could go wrong if we don't prepare"
-    ]
-  },
 
-  "confidence": {
-    "overall": 85,
-    "defensiveAnalysis": 80,
-    "offensiveAnalysis": 85,
-    "playerIdentification": 70,
-    "recommendations": 80,
-    "limitations": ["What we couldn't determine", "What we need more film for"]
-  }
-}
-\`\`\`
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 32px;
+        }
 
-Remember:
-- Identify the specific scheme names from the reference list
-- Consider the skill level when evaluating execution
-- Only report what you can actually observe
-- Provide actionable recommendations for any coaching level`;
-}
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            text-decoration: none;
+        }
 
-// ===========================================
-// ENDPOINTS
-// ===========================================
+        .logo-text {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1.75rem;
+            letter-spacing: 2px;
+        }
 
-app.get('/', (req, res) => {
-    res.json({ 
-        status: 'CoachIQ API running', 
-        version: '6.0.0-comprehensive',
-        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis']
-    });
-});
+        .logo-text span:first-child { color: var(--orange); }
+        .logo-text span:last-child { color: var(--accent); }
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+        .nav-links {
+            display: flex;
+            gap: 8px;
+        }
 
-// User endpoints
-app.post('/api/users/register', (req, res) => {
-    const { email, name, teamName } = req.body;
-    if (!email) return res.status(400).json({ error: 'Email required' });
-    const userId = uuidv4();
-    const user = { id: userId, email, name: name || 'Coach', teamName: teamName || '', createdAt: new Date().toISOString() };
-    users.set(userId, user);
-    users.set(email, user);
-    res.json({ user });
-});
+        .nav-link {
+            padding: 8px 16px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.2s;
+            border: none;
+            background: none;
+        }
 
-app.get('/api/users/:email', (req, res) => {
-    const user = users.get(req.params.email);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ user });
-});
+        .nav-link:hover {
+            color: var(--text);
+            background: var(--gray);
+        }
 
-app.get('/api/users/:email/reports', (req, res) => {
-    const userReports = [];
-    reports.forEach((report) => {
-        if (report.userEmail === req.params.email) {
-            userReports.push({
-                id: report.id, opponentName: report.opponentName, status: report.status,
-                progress: report.progress, progressText: report.progressText,
-                createdAt: report.createdAt, completedAt: report.completedAt
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            text-decoration: none;
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-muted);
+        }
+
+        .btn-ghost:hover {
+            background: var(--gray);
+            color: var(--text);
+        }
+
+        .btn-secondary {
+            background: var(--gray);
+            color: var(--text);
+            border: 1px solid var(--light-gray);
+        }
+
+        .btn-secondary:hover {
+            background: var(--light-gray);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--orange), #FF8E53);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(255, 107, 53, 0.4);
+        }
+
+        .btn-accent {
+            background: linear-gradient(135deg, var(--accent), #00E6B8);
+            color: var(--darker);
+        }
+
+        .btn-accent:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(0, 212, 170, 0.4);
+        }
+
+        .btn-lg { padding: 14px 28px; font-size: 1rem; }
+        .btn-sm { padding: 8px 14px; font-size: 0.85rem; }
+
+        /* User Menu */
+        .user-menu { position: relative; }
+
+        .user-avatar {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--orange), var(--accent));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: white;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .user-avatar:hover { transform: scale(1.05); }
+
+        .user-dropdown {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: var(--dark);
+            border: 1px solid var(--light-gray);
+            border-radius: 12px;
+            min-width: 240px;
+            padding: 8px;
+            display: none;
+            z-index: 100;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+        }
+
+        .user-dropdown.active { display: block; }
+
+        .user-dropdown-header {
+            padding: 12px;
+            border-bottom: 1px solid var(--gray);
+            margin-bottom: 8px;
+        }
+
+        .user-dropdown-header strong {
+            display: block;
+            font-size: 0.95rem;
+        }
+
+        .user-dropdown-header p {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .plan-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 50px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            margin-top: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .plan-badge.free { background: var(--gray); color: var(--text-muted); }
+        .plan-badge.pro { background: rgba(255, 107, 53, 0.2); color: var(--orange); }
+
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            padding: 10px 12px;
+            border: none;
+            background: none;
+            color: var(--text);
+            font-size: 0.9rem;
+            border-radius: 8px;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.2s;
+        }
+
+        .dropdown-item:hover { background: var(--gray); }
+
+        .dropdown-item svg {
+            width: 18px;
+            height: 18px;
+            color: var(--text-muted);
+        }
+
+        /* Main Content */
+        .main {
+            padding-top: 64px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* Hero */
+        .hero {
+            padding: 80px 0 60px;
+            text-align: center;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 107, 53, 0.15);
+            color: var(--orange);
+            font-size: 0.85rem;
+            font-weight: 600;
+            border-radius: 50px;
+            margin-bottom: 24px;
+            border: 1px solid rgba(255, 107, 53, 0.3);
+        }
+
+        .hero h1 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 4rem;
+            letter-spacing: 2px;
+            line-height: 1.1;
+            margin-bottom: 20px;
+        }
+
+        .hero h1 .orange { color: var(--orange); }
+        .hero h1 .accent { color: var(--accent); }
+
+        .hero p {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 560px;
+            margin: 0 auto 32px;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        /* Features */
+        .features {
+            padding: 60px 0;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 48px;
+        }
+
+        .section-header h2 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 2.5rem;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .section-header p {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+        }
+
+        .feature-card {
+            background: var(--dark);
+            border: 1px solid var(--gray);
+            border-radius: 16px;
+            padding: 28px;
+            transition: all 0.3s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--orange);
+            transform: translateY(-4px);
+            box-shadow: 0 12px 40px rgba(255, 107, 53, 0.1);
+        }
+
+        .feature-icon {
+            width: 52px;
+            height: 52px;
+            background: linear-gradient(135deg, rgba(255, 107, 53, 0.2), rgba(0, 212, 170, 0.2));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 16px;
+            font-size: 1.5rem;
+        }
+
+        .feature-card h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--dark);
+            border: 1px solid var(--gray);
+            border-radius: 16px;
+        }
+
+        .card-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--gray);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .card-header h2 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1.5rem;
+            letter-spacing: 1px;
+        }
+
+        .card-body {
+            padding: 24px;
+        }
+
+        /* Upload Zone */
+        .upload-zone {
+            border: 2px dashed var(--light-gray);
+            border-radius: 16px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: rgba(33, 38, 45, 0.5);
+        }
+
+        .upload-zone:hover,
+        .upload-zone.dragover {
+            border-color: var(--orange);
+            background: rgba(255, 107, 53, 0.05);
+        }
+
+        .upload-icon {
+            width: 72px;
+            height: 72px;
+            background: var(--gray);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 2rem;
+        }
+
+        .upload-zone h3 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .upload-zone p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .upload-formats {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 16px;
+        }
+
+        .format-tag {
+            padding: 6px 12px;
+            background: var(--darker);
+            border: 1px solid var(--gray);
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        input[type="file"] { display: none; }
+
+        /* Forms */
+        .form-group { margin-bottom: 20px; }
+
+        .form-label {
+            display: block;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid var(--light-gray);
+            border-radius: 10px;
+            font-size: 0.95rem;
+            background: var(--darker);
+            color: var(--text);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--orange);
+            box-shadow: 0 0 0 3px rgba(255, 107, 53, 0.2);
+        }
+
+        .form-input::placeholder { color: var(--text-muted); }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        /* Options Grid */
+        .options-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin: 20px 0;
+        }
+
+        .option {
+            background: var(--darker);
+            border: 1px solid var(--gray);
+            border-radius: 12px;
+            padding: 16px 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .option:hover { border-color: var(--orange); }
+
+        .option.selected {
+            border-color: var(--orange);
+            background: rgba(255, 107, 53, 0.1);
+        }
+
+        .option-icon {
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+        }
+
+        .option-label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .option.selected .option-label { color: var(--orange); }
+
+        /* Alerts */
+        .alert {
+            padding: 14px 18px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+        }
+
+        .alert-info {
+            background: rgba(139, 148, 158, 0.1);
+            border: 1px solid var(--gray);
+            color: var(--text-muted);
+        }
+
+        .alert-success {
+            background: rgba(0, 212, 170, 0.1);
+            border: 1px solid rgba(0, 212, 170, 0.3);
+            color: var(--accent);
+        }
+
+        .alert-warning {
+            background: rgba(255, 180, 0, 0.1);
+            border: 1px solid rgba(255, 180, 0, 0.3);
+            color: var(--warning);
+        }
+
+        .alert-error {
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.3);
+            color: var(--error);
+        }
+
+        /* Pricing */
+        .pricing-section { padding: 80px 0; }
+
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 24px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        .pricing-card {
+            background: var(--dark);
+            border: 1px solid var(--gray);
+            border-radius: 20px;
+            padding: 32px;
+            position: relative;
+            transition: all 0.3s;
+        }
+
+        .pricing-card:hover {
+            border-color: var(--light-gray);
+            transform: translateY(-4px);
+        }
+
+        .pricing-card.featured {
+            border-color: var(--orange);
+            box-shadow: 0 0 40px rgba(255, 107, 53, 0.2);
+        }
+
+        .pricing-card.featured::before {
+            content: 'MOST POPULAR';
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, var(--orange), #FF8E53);
+            color: white;
+            padding: 6px 16px;
+            border-radius: 50px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .pricing-card h3 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1.5rem;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .pricing-card .price {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 3.5rem;
+            color: var(--orange);
+            margin: 16px 0;
+        }
+
+        .pricing-card .price span {
+            font-family: 'DM Sans', sans-serif;
+            font-size: 1rem;
+            color: var(--text-muted);
+        }
+
+        .pricing-card .price-note {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 24px;
+        }
+
+        .pricing-features {
+            list-style: none;
+            margin-bottom: 24px;
+        }
+
+        .pricing-features li {
+            padding: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .pricing-features li .check { color: var(--accent); }
+        .pricing-features li .x { color: var(--text-muted); opacity: 0.5; }
+
+        /* Video Preview */
+        .video-preview {
+            border-radius: 12px;
+            overflow: hidden;
+            background: var(--darker);
+            margin: 20px 0;
+            border: 1px solid var(--gray);
+        }
+
+        .video-preview video {
+            width: 100%;
+            max-height: 280px;
+            display: block;
+        }
+
+        .video-info {
+            padding: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--dark);
+            border-top: 1px solid var(--gray);
+        }
+
+        .video-name { font-weight: 600; font-size: 0.9rem; }
+        .video-size { color: var(--text-muted); font-size: 0.85rem; }
+
+        /* Progress */
+        .progress-bar {
+            height: 10px;
+            background: var(--gray);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--orange), var(--accent));
+            border-radius: 5px;
+            transition: width 0.3s;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .stat-box {
+            background: var(--gray);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1.75rem;
+            color: var(--text);
+        }
+
+        .stat-value.orange { color: var(--orange); }
+        .stat-value.accent { color: var(--accent); }
+
+        /* Report Sections */
+        .report-section {
+            border: 1px solid var(--gray);
+            border-radius: 12px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .report-section-header {
+            background: var(--gray);
+            padding: 14px 20px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.95rem;
+        }
+
+        .report-section-body {
+            padding: 20px;
+        }
+
+        .report-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--gray);
+        }
+
+        .report-item:last-child { border-bottom: none; }
+
+        .report-item-value {
+            font-weight: 700;
+            color: var(--orange);
+        }
+
+        /* Practice Plan Section */
+        .practice-drill {
+            background: var(--darker);
+            border: 1px solid var(--gray);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .practice-drill-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .practice-drill-name {
+            font-weight: 700;
+            color: var(--orange);
+        }
+
+        .practice-drill-duration {
+            font-size: 0.85rem;
+            color: var(--accent);
+            background: rgba(0, 212, 170, 0.1);
+            padding: 4px 10px;
+            border-radius: 50px;
+        }
+
+        .practice-drill-purpose {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+        }
+
+        .practice-drill-points {
+            font-size: 0.85rem;
+            color: var(--text);
+        }
+
+        .practice-drill-points li {
+            padding: 4px 0;
+        }
+
+        .scout-team-look {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--gray);
+            font-size: 0.85rem;
+            color: var(--warning);
+        }
+
+        /* Dashboard Reports List */
+        .reports-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .report-card {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px;
+            background: var(--darker);
+            border: 1px solid var(--gray);
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .report-card:hover {
+            border-color: var(--orange);
+            background: rgba(255, 107, 53, 0.05);
+        }
+
+        .report-card h4 {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .report-card p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .status-badge {
+            padding: 6px 14px;
+            border-radius: 50px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .status-complete { background: rgba(0, 212, 170, 0.2); color: var(--accent); }
+        .status-processing { background: rgba(255, 107, 53, 0.2); color: var(--orange); }
+        .status-queued { background: var(--gray); color: var(--text-muted); }
+        .status-failed { background: rgba(255, 107, 107, 0.2); color: var(--error); }
+
+        /* Success Screen */
+        .success-screen {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .success-icon {
+            width: 80px;
+            height: 80px;
+            background: rgba(0, 212, 170, 0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            font-size: 2.5rem;
+        }
+
+        .success-screen h2 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 2rem;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .success-screen p {
+            color: var(--text-muted);
+            margin-bottom: 32px;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+            padding: 20px;
+        }
+
+        .modal-overlay.active { display: flex; }
+
+        .modal {
+            background: var(--dark);
+            border: 1px solid var(--gray);
+            border-radius: 20px;
+            padding: 32px;
+            max-width: 420px;
+            width: 100%;
+            position: relative;
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: var(--gray);
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 1.2rem;
+        }
+
+        .modal-close:hover { background: var(--light-gray); color: var(--text); }
+
+        .modal h2 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1.75rem;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .modal > p {
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+
+        .auth-tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--darker);
+            padding: 4px;
+            border-radius: 10px;
+            margin-bottom: 24px;
+        }
+
+        .auth-tab {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            background: transparent;
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+
+        .auth-tab.active {
+            background: var(--gray);
+            color: var(--text);
+        }
+
+        /* Upload Banner */
+        .upload-banner {
+            position: fixed;
+            top: 64px;
+            left: 0;
+            right: 0;
+            background: var(--dark);
+            border-bottom: 1px solid var(--gray);
+            padding: 12px 24px;
+            z-index: 900;
+            display: none;
+        }
+
+        .upload-banner.active { display: block; }
+
+        .upload-banner-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .upload-banner-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .upload-banner-icon {
+            width: 44px;
+            height: 44px;
+            background: rgba(255, 107, 53, 0.2);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+
+        .upload-banner-text h4 { font-size: 0.9rem; font-weight: 700; }
+        .upload-banner-text p { font-size: 0.8rem; color: var(--text-muted); }
+
+        .upload-banner-progress { flex: 1; max-width: 300px; }
+
+        .upload-banner-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        body.uploading .main { padding-top: 124px; }
+
+        /* Spinner */
+        .spinner {
+            width: 36px;
+            height: 36px;
+            border: 3px solid var(--gray);
+            border-top-color: var(--orange);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 3000;
+        }
+
+        .toast {
+            background: var(--dark);
+            border: 1px solid var(--gray);
+            border-radius: 10px;
+            padding: 14px 20px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 12px;
+            animation: slideIn 0.3s;
+        }
+
+        .toast.success { border-left: 4px solid var(--accent); }
+        .toast.error { border-left: 4px solid var(--error); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Footer */
+        .footer {
+            border-top: 1px solid var(--gray);
+            padding: 40px 24px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        .footer a {
+            color: var(--text-muted);
+            text-decoration: none;
+        }
+
+        .footer a:hover { color: var(--orange); }
+
+        /* Highlight Box */
+        .highlight-box {
+            background: linear-gradient(135deg, rgba(255, 107, 53, 0.15), rgba(0, 212, 170, 0.1));
+            border: 2px solid var(--orange);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .highlight-box-title {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1rem;
+            letter-spacing: 0.5px;
+            color: var(--orange);
+            margin-bottom: 8px;
+        }
+
+        /* Breakdown Card */
+        .breakdown-card {
+            background: var(--darker);
+            border: 1px solid var(--gray);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .breakdown-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .breakdown-card-title { font-weight: 700; }
+        .breakdown-card-value { color: var(--accent); font-weight: 700; }
+
+        /* Section Hidden */
+        .section-hidden { display: none; }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .empty-state-icon {
+            width: 72px;
+            height: 72px;
+            background: var(--gray);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 2rem;
+        }
+
+        .empty-state h3 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1.5rem;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .features-grid { grid-template-columns: repeat(2, 1fr); }
+            .pricing-grid { grid-template-columns: 1fr; max-width: 400px; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .hero h1 { font-size: 2.5rem; }
+            .features-grid { grid-template-columns: 1fr; }
+            .form-row { grid-template-columns: 1fr; }
+            .options-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+<!-- PDF Generation Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+    <!-- Upload Banner -->
+    <div class="upload-banner" id="upload-banner">
+        <div class="upload-banner-content">
+            <div class="upload-banner-info">
+                <div class="upload-banner-icon">📤</div>
+                <div class="upload-banner-text">
+                    <h4 id="banner-title">Uploading video...</h4>
+                    <p id="banner-subtitle">You can keep browsing</p>
+                </div>
+            </div>
+            <div class="upload-banner-progress">
+                <div class="progress-bar"><div class="progress-fill" id="banner-progress-fill"></div></div>
+                <div class="upload-banner-stats"><span id="banner-percent">0%</span><span id="banner-speed">--</span></div>
+            </div>
+            <button class="btn btn-sm btn-ghost" onclick="minimizeBanner()">Minimize</button>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-left">
+            <a class="logo" onclick="showSection('home')">
+                <div class="logo-text"><span>COACH</span><span>IQ</span></div>
+            </a>
+            <div class="nav-links">
+                <button class="nav-link" onclick="showSection('home')">Home</button>
+                <button class="nav-link" onclick="showSection('pricing')">Pricing</button>
+                <button class="nav-link" id="nav-dashboard" onclick="showSection('dashboard')" style="display: none;">Dashboard</button>
+            </div>
+        </div>
+        <div class="nav-right" id="auth-buttons">
+            <button class="btn btn-ghost" onclick="openAuthModal('login')">Sign In</button>
+            <button class="btn btn-primary" onclick="openAuthModal('signup')">Get Started Free</button>
+        </div>
+        <div class="user-menu" id="user-section" style="display: none;">
+            <div class="user-avatar" onclick="toggleUserMenu()"><span id="user-initial">C</span></div>
+            <div class="user-dropdown" id="user-dropdown">
+                <div class="user-dropdown-header">
+                    <strong id="user-dropdown-name">Coach</strong>
+                    <p id="user-dropdown-email"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="5f3c303e3c371f3a323e3633713c3032">[email&#160;protected]</a></p>
+                    <span class="plan-badge free" id="user-plan-badge">FREE TRIAL</span>
+                </div>
+                <button class="dropdown-item" onclick="showSection('dashboard')">📊 My Reports</button>
+                <button class="dropdown-item" onclick="showSection('analyze')">➕ New Report</button>
+                <button class="dropdown-item" onclick="showSection('pricing')">⭐ Upgrade Plan</button>
+                <button class="dropdown-item" onclick="logout()">🚪 Sign Out</button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main">
+        <div class="container">
+            <!-- HOME -->
+            <section id="home-section">
+                <div class="hero">
+                    <div class="hero-badge">⚡ AI-Powered Scouting for Every Level</div>
+                    <h1>TURN GAME FILM INTO<br><span class="orange">WINNING</span> <span class="accent">GAME PLANS</span></h1>
+                    <p>Upload opponent film and get professional scouting reports in minutes. Track offensive sets, ball movement, pace, and more.</p>
+                    <div class="hero-buttons">
+                        <button class="btn btn-primary btn-lg" onclick="showSection('analyze')">🏀 Start Analyzing Free</button>
+                        <button class="btn btn-secondary btn-lg" onclick="showSection('pricing')">View Pricing</button>
+                    </div>
+                </div>
+
+                <div class="features">
+                    <div class="section-header">
+                        <h2>EVERYTHING YOU NEED TO SCOUT SMARTER</h2>
+                        <p>Professional-grade analysis accessible to coaches at every level</p>
+                    </div>
+                    <div class="features-grid">
+                        <div class="feature-card">
+                            <div class="feature-icon">🛡️</div>
+                            <h3>Defensive Analysis</h3>
+                            <p>Identify man, zone, press, and combination defenses. See ball screen coverages and help rotations.</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">⚡</div>
+                            <h3>Offensive Sets & PPP</h3>
+                            <p>Track 60+ offensive sets with Points Per Possession. Know which plays work and which don't.</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">🔄</div>
+                            <h3>Ball Movement</h3>
+                            <p>Track reversals per possession, passes before shots, and identify stagnation tendencies.</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">⏱️</div>
+                            <h3>Pace & Tempo</h3>
+                            <p>Estimate possessions per game, shot clock usage, and transition tendencies.</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">🔥</div>
+                            <h3>Turnover Analysis</h3>
+                            <p>See how turnovers become scores. Live ball vs dead ball conversion rates.</p>
+                        </div>
+                        <div class="feature-card">
+                            <div class="feature-icon">📋</div>
+                            <h3>Practice Plans</h3>
+                            <p>Get specific drills with scout team instructions tailored to exploit opponent weaknesses.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PRICING -->
+            <section id="pricing-section" class="section-hidden">
+                <div class="pricing-section">
+                    <div class="section-header">
+                        <h2>SIMPLE, TRANSPARENT PRICING</h2>
+                        <p>Start free, upgrade when you need more</p>
+                    </div>
+                    <div class="pricing-grid">
+                        <div class="pricing-card">
+                            <h3>FREE</h3>
+                            <div class="price">$0<span>/forever</span></div>
+                            <p class="price-note">Perfect for trying it out</p>
+                            <ul class="pricing-features">
+                                <li><span class="check">✓</span> 3 scouting reports</li>
+                                <li><span class="check">✓</span> Full AI analysis</li>
+                                <li><span class="check">✓</span> Email delivery</li>
+                                <li><span class="x">✗</span> Unlimited reports</li>
+                                <li><span class="x">✗</span> Priority processing</li>
+                            </ul>
+                            <button class="btn btn-secondary" style="width: 100%;" onclick="openAuthModal('signup')">Get Started Free</button>
+                        </div>
+                        <div class="pricing-card featured">
+                            <h3>PRO MONTHLY</h3>
+                            <div class="price">$49<span>/month</span></div>
+                            <p class="price-note">For active coaches</p>
+                            <ul class="pricing-features">
+                                <li><span class="check">✓</span> Unlimited reports</li>
+                                <li><span class="check">✓</span> Full AI analysis</li>
+                                <li><span class="check">✓</span> Email delivery</li>
+                                <li><span class="check">✓</span> Priority processing</li>
+                                <li><span class="check">✓</span> PDF exports</li>
+                            </ul>
+                            <button class="btn btn-primary" style="width: 100%;" onclick="subscribe('monthly')">Subscribe Now</button>
+                        </div>
+                        <div class="pricing-card">
+                            <h3>PRO YEARLY</h3>
+                            <div class="price">$399<span>/year</span></div>
+                            <p class="price-note">Save $189 (32% off)</p>
+                            <ul class="pricing-features">
+                                <li><span class="check">✓</span> Unlimited reports</li>
+                                <li><span class="check">✓</span> Full AI analysis</li>
+                                <li><span class="check">✓</span> Email delivery</li>
+                                <li><span class="check">✓</span> Priority processing</li>
+                                <li><span class="check">✓</span> PDF exports</li>
+                            </ul>
+                            <button class="btn btn-accent" style="width: 100%;" onclick="subscribe('yearly')">Subscribe & Save</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ANALYZE -->
+            <section id="analyze-section" class="section-hidden">
+                <div style="max-width: 640px; margin: 40px auto;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>🏀 NEW SCOUTING REPORT</h2>
+                            <button class="btn btn-sm btn-ghost" onclick="showSection('home')">← Back</button>
+                        </div>
+                        <div class="card-body">
+                            <div id="step-upload">
+                                <p style="color: var(--text-muted); margin-bottom: 20px;">Upload your opponent's game film to generate an AI scouting report with set efficiency, ball movement, and practice plans.</p>
+                                <div class="upload-zone" id="upload-zone">
+                                    <div class="upload-icon">🎬</div>
+                                    <h3>Drop your game film here</h3>
+                                    <p>or click to browse</p>
+                                    <div class="upload-formats">
+                                        <span class="format-tag">MP4</span>
+                                        <span class="format-tag">MOV</span>
+                                        <span class="format-tag">AVI</span>
+                                    </div>
+                                </div>
+                                <input type="file" id="file-input" accept="video/*">
+                                <div class="video-preview" id="video-preview" style="display: none;">
+                                    <video id="preview-video" controls></video>
+                                    <div class="video-info">
+                                        <div>
+                                            <span class="video-name" id="video-name"></span>
+                                            <span class="video-size" id="video-size"></span>
+                                        </div>
+                                        <button class="btn btn-sm btn-ghost" onclick="clearVideo()">✕ Remove</button>
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary" style="width: 100%; margin-top: 20px;" id="continue-btn" onclick="goToStep2()" disabled>Continue →</button>
+                            </div>
+                            
+                            <div id="step-details" style="display: none;">
+                                <button class="btn btn-sm btn-ghost" onclick="goToStep1()" style="margin-bottom: 20px;">← Back to upload</button>
+                                
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label">Opponent Name</label>
+                                        <input type="text" class="form-input" id="opponent-name" placeholder="Central High Tigers">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Your Team Name</label>
+                                        <input type="text" class="form-input" id="your-team-name" placeholder="East Side Eagles">
+                                    </div>
+                                </div>
+
+                                <!-- Team Color Selection -->
+                                <div style="background: var(--dark); border: 1px solid var(--gray); border-radius: 12px; padding: 20px; margin: 20px 0;">
+                                    <p style="font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
+                                        <span style="font-size: 1.25rem;">👕</span> Team Jersey Colors
+                                    </p>
+                                    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 16px;">
+                                        Help us identify which team is which in the video. Select the primary jersey colors.
+                                    </p>
+                                    
+                                    <div class="form-row">
+                                        <div class="form-group">
+                                            <label class="form-label" style="color: var(--error);">🎯 Opponent Jersey Color</label>
+                                            <div class="color-picker-group">
+                                                <select class="form-input" id="opponent-color" style="flex: 1;">
+                                                    <option value="">Select color...</option>
+                                                    <option value="white">⚪ White</option>
+                                                    <option value="black">⚫ Black</option>
+                                                    <option value="red">🔴 Red</option>
+                                                    <option value="blue">🔵 Blue</option>
+                                                    <option value="navy">🔵 Navy Blue</option>
+                                                    <option value="light-blue">🩵 Light Blue</option>
+                                                    <option value="green">🟢 Green</option>
+                                                    <option value="dark-green">🟢 Dark Green</option>
+                                                    <option value="yellow">🟡 Yellow/Gold</option>
+                                                    <option value="orange">🟠 Orange</option>
+                                                    <option value="purple">🟣 Purple</option>
+                                                    <option value="maroon">🟤 Maroon/Burgundy</option>
+                                                    <option value="gray">⚪ Gray</option>
+                                                    <option value="pink">🩷 Pink</option>
+                                                </select>
+                                            </div>
+                                            <input type="text" class="form-input" id="opponent-color-custom" placeholder="Or type custom color (e.g., 'teal with white trim')" style="margin-top: 8px; font-size: 0.85rem;">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="form-label" style="color: var(--accent);">🏠 Your Team Jersey Color</label>
+                                            <div class="color-picker-group">
+                                                <select class="form-input" id="your-color" style="flex: 1;">
+                                                    <option value="">Select color...</option>
+                                                    <option value="white">⚪ White</option>
+                                                    <option value="black">⚫ Black</option>
+                                                    <option value="red">🔴 Red</option>
+                                                    <option value="blue">🔵 Blue</option>
+                                                    <option value="navy">🔵 Navy Blue</option>
+                                                    <option value="light-blue">🩵 Light Blue</option>
+                                                    <option value="green">🟢 Green</option>
+                                                    <option value="dark-green">🟢 Dark Green</option>
+                                                    <option value="yellow">🟡 Yellow/Gold</option>
+                                                    <option value="orange">🟠 Orange</option>
+                                                    <option value="purple">🟣 Purple</option>
+                                                    <option value="maroon">🟤 Maroon/Burgundy</option>
+                                                    <option value="gray">⚪ Gray</option>
+                                                    <option value="pink">🩷 Pink</option>
+                                                </select>
+                                            </div>
+                                            <input type="text" class="form-input" id="your-color-custom" placeholder="Or type custom color (e.g., 'blue with gold trim')" style="margin-top: 8px; font-size: 0.85rem;">
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group">
+                                        <label class="form-label">Your Email</label>
+                                        <input type="email" class="form-input" id="user-email" placeholder="coach@school.edu">
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">Your Name (optional)</label>
+                                        <input type="text" class="form-input" id="user-name" placeholder="Coach Johnson">
+                                    </div>
+                                </div>
+                                
+                                <label class="form-label" style="margin-top: 24px;">What to Analyze</label>
+                                <div class="options-grid">
+                                    <div class="option selected" data-option="defense" onclick="this.classList.toggle('selected')">
+                                        <div class="option-icon">🛡️</div>
+                                        <div class="option-label">Defense</div>
+                                    </div>
+                                    <div class="option selected" data-option="offense" onclick="this.classList.toggle('selected')">
+                                        <div class="option-icon">⚡</div>
+                                        <div class="option-label">Offense</div>
+                                    </div>
+                                    <div class="option" data-option="players" onclick="this.classList.toggle('selected')">
+                                        <div class="option-icon">👤</div>
+                                        <div class="option-label">Players</div>
+                                    </div>
+                                    <div class="option selected" data-option="pace" onclick="this.classList.toggle('selected')">
+                                        <div class="option-icon">⏱️</div>
+                                        <div class="option-label">Pace</div>
+                                    </div>
+                                </div>
+                                <div class="alert alert-info">
+                                    ℹ️ After you submit, you can browse freely. We'll email you when your report is ready.
+                                </div>
+                                <button class="btn btn-primary" style="width: 100%;" onclick="startBackgroundUpload()">🚀 Upload & Analyze</button>
+                            </div>
+                            
+                            <div id="step-success" style="display: none;">
+                                <div class="success-screen">
+                                    <div class="success-icon">✓</div>
+                                    <h2>UPLOAD STARTED!</h2>
+                                    <p>We'll email you at <strong id="confirm-email"></strong> when your report is ready.</p>
+                                    <div style="display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
+                                        <button class="btn btn-primary" onclick="showSection('dashboard')">View Dashboard</button>
+                                        <button class="btn btn-secondary" onclick="showSection('home')">Go Home</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- DASHBOARD -->
+            <section id="dashboard-section" class="section-hidden">
+                <div style="max-width: 800px; margin: 40px auto;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2>📊 MY REPORTS</h2>
+                            <button class="btn btn-sm btn-primary" onclick="showSection('analyze')">+ New Report</button>
+                        </div>
+                        <div class="card-body">
+                            <div id="dashboard-loading" style="text-align: center; padding: 40px;">
+                                <div class="spinner" style="margin: 0 auto 16px;"></div>
+                                <p style="color: var(--text-muted);">Loading reports...</p>
+                            </div>
+                            <div id="dashboard-empty" style="display: none;">
+                                <div class="empty-state">
+                                    <div class="empty-state-icon">📋</div>
+                                    <h3>NO REPORTS YET</h3>
+                                    <p>Upload your first game film to get started.</p>
+                                    <button class="btn btn-primary" onclick="showSection('analyze')">Create Your First Report</button>
+                                </div>
+                            </div>
+                            <div id="dashboard-reports" class="reports-list" style="display: none;"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- VIEW REPORT -->
+            <section id="report-section" class="section-hidden">
+                <div style="max-width: 900px; margin: 40px auto;">
+                    <div class="card">
+                        <div class="card-header">
+                            <h2 id="view-report-title">📋 SCOUTING REPORT</h2>
+                            <button class="btn btn-sm btn-ghost" onclick="showSection('dashboard')">← Back</button>
+                        </div>
+                        <div class="card-body">
+                            <div id="report-loading" style="text-align: center; padding: 40px;">
+                                <div class="spinner" style="margin: 0 auto;"></div>
+                            </div>
+                            <div id="report-processing" style="display: none; text-align: center; padding: 40px;">
+                                <div class="spinner" style="margin: 0 auto 20px;"></div>
+                                <h3 style="margin-bottom: 8px;">Analyzing video...</h3>
+                                <p style="color: var(--text-muted); margin-bottom: 24px;" id="report-processing-text">Processing...</p>
+                                <div style="max-width: 300px; margin: 0 auto;">
+                                    <div class="progress-bar"><div class="progress-fill" id="report-progress-fill"></div></div>
+                                </div>
+                            </div>
+                            <div id="report-content" style="display: none;">
+                                <!-- Opponent Banner -->
+                                <div id="opponent-banner" style="background: linear-gradient(135deg, var(--orange), #FF8E53); border-radius: 12px; padding: 20px; margin-bottom: 24px; text-align: center;">
+                                    <p style="font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; opacity: 0.9; margin-bottom: 4px;">SCOUTING REPORT FOR</p>
+                                    <h2 id="opponent-banner-name" style="font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: 2px; margin: 0;">OPPONENT</h2>
+                                    <p id="opponent-banner-color" style="font-size: 0.85rem; opacity: 0.9; margin-top: 4px;"></p>
+                                </div>
+                                
+                                <div class="alert alert-success" style="margin-bottom: 24px;">
+                                    ✓ Analysis complete — All stats below are for the <strong>OPPONENT</strong> team
+                                </div>
+                                
+                                <!-- Team Identification Banner -->
+                                <div id="team-info-banner" style="display: none; background: var(--gray); border: 1px solid var(--light-gray); border-radius: 12px; padding: 16px; margin-bottom: 24px;">
+                                    <p style="font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                                        <span style="font-size: 1.25rem;">🎽</span> TEAM IDENTIFICATION
+                                    </p>
+                                    <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+                                        <div style="flex: 1; min-width: 150px; background: rgba(255,107,53,0.1); padding: 12px; border-radius: 8px; border-left: 3px solid var(--orange);">
+                                            <p style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px;">🎯 Scouted Team (Opponent)</p>
+                                            <p style="font-weight: 600;"><span id="team-opponent-color" style="display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; vertical-align: middle;"></span><span id="team-opponent-name">--</span></p>
+                                        </div>
+                                        <div style="flex: 1; min-width: 150px; background: rgba(0,212,170,0.1); padding: 12px; border-radius: 8px; border-left: 3px solid var(--accent);">
+                                            <p style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px;">🏠 Your Team</p>
+                                            <p style="font-weight: 600;"><span id="team-your-color" style="display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 8px; vertical-align: middle;"></span><span id="team-your-name">--</span></p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <p style="color: var(--text-muted); margin-bottom: 24px; font-size: 0.9rem;" id="report-date"></p>
+                                
+                                <!-- Top Stats - Opponent -->
+                                <p style="font-weight: 700; margin-bottom: 12px; color: var(--orange); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px;">📊 OPPONENT STATISTICS</p>
+                                <div class="stats-grid">
+                                    <div class="stat-box"><div class="stat-label">Their Defense</div><div class="stat-value" id="stat-defense">--</div></div>
+                                    <div class="stat-box"><div class="stat-label">Their Pace</div><div class="stat-value orange" id="stat-pace">--</div></div>
+                                    <div class="stat-box"><div class="stat-label">Their Poss/Game</div><div class="stat-value accent" id="stat-possessions">--</div></div>
+                                    <div class="stat-box"><div class="stat-label">Their Reversals/Poss</div><div class="stat-value" id="stat-reversals">--</div></div>
+                                </div>
+                                <div class="stats-grid" style="margin-top: 12px;">
+                                    <div class="stat-box"><div class="stat-label">Their Passes/Shot</div><div class="stat-value accent" id="stat-passes">--</div></div>
+                                    <div class="stat-box"><div class="stat-label">Their TO → Score</div><div class="stat-value orange" id="stat-toconversion">--</div></div>
+                                    <div class="stat-box"><div class="stat-label">Frames Analyzed</div><div class="stat-value" id="stat-frames">--</div></div>
+                                    <div class="stat-box"><div class="stat-label">AI Confidence</div><div class="stat-value accent" id="stat-confidence">--</div></div>
+                                </div>
+
+                                <!-- Must Stop Box -->
+                                <div id="must-stop-box" class="highlight-box" style="margin-top: 24px; display: none;">
+                                    <div class="highlight-box-title">🎯 OPPONENT'S #1 WEAPON — MUST STOP TO WIN</div>
+                                    <p id="must-stop-text" style="font-size: 1.1rem; font-weight: 500;"></p>
+                                </div>
+
+                                <!-- Report Sections -->
+                                <div class="report-section">
+                                    <div class="report-section-header">🛡️ OPPONENT'S DEFENSE</div>
+                                    <div class="report-section-body" id="defense-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">⚡ OPPONENT'S OFFENSE</div>
+                                    <div class="report-section-body" id="offense-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">📊 OPPONENT'S SET EFFICIENCY & BALL MOVEMENT</div>
+                                    <div class="report-section-body" id="efficiency-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">⏱️ OPPONENT'S PACE, TEMPO & TURNOVERS</div>
+                                    <div class="report-section-body" id="pace-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">🌟 OPPONENT'S KEY VALUE & X-FACTOR</div>
+                                    <div class="report-section-body" id="value-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">👤 OPPONENT'S KEY PLAYERS</div>
+                                    <div class="report-section-body" id="players-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">📋 YOUR PRACTICE PLAN</div>
+                                    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;">Drills to prepare YOUR team against this opponent</p>
+                                    <div class="report-section-body" id="practice-breakdown"></div>
+                                </div>
+                                <div class="report-section">
+                                    <div class="report-section-header">💡 YOUR GAME PLAN</div>
+                                    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;">How YOUR team should play against this opponent</p>
+                                    <div class="report-section-body" id="recommendations"></div>
+                                </div>
+                                
+                                <!-- Download & Share Actions -->
+                                <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--gray);">
+                                    <p style="font-weight: 700; margin-bottom: 16px;">📥 EXPORT REPORT</p>
+                                    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                                        <button class="btn btn-primary" onclick="downloadPDF()">
+                                            📄 Download PDF
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="printReport()">
+                                            🖨️ Print Report
+                                        </button>
+                                        <button class="btn btn-secondary" onclick="copyReportLink()">
+                                            🔗 Copy Link
+                                        </button>
+                                    </div>
+                                    <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 12px;">
+                                        💡 Pro tip: Share the PDF with your assistant coaches before practice
+                                    </p>
+                                </div>
+                            </div>
+                            <div id="report-error" style="display: none;" class="alert alert-error">
+                                <span id="report-error-message">Analysis failed</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <p>© 2026 CoachIQ · <a href="#" onclick="showSection('pricing')">Pricing</a> · <a href="/cdn-cgi/l/email-protection#8ffcfaffffe0fdfbcfece0eeece7e6fea1ece0e2">Support</a></p>
+    </footer>
+
+    <!-- Auth Modal -->
+    <div class="modal-overlay" id="auth-modal">
+        <div class="modal">
+            <button class="modal-close" onclick="closeAuthModal()">✕</button>
+            <h2>WELCOME TO COACHIQ</h2>
+            <p>Start scouting smarter with AI</p>
+            <div class="auth-tabs">
+                <button class="auth-tab" id="tab-login" onclick="switchAuthTab('login')">Sign In</button>
+                <button class="auth-tab active" id="tab-signup" onclick="switchAuthTab('signup')">Sign Up</button>
+            </div>
+            <form onsubmit="handleAuth(event)">
+                <div class="form-group" id="name-group">
+                    <label class="form-label">Name</label>
+                    <input type="text" class="form-input" id="auth-name" placeholder="Coach Johnson">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Email</label>
+                    <input type="email" class="form-input" id="auth-email" placeholder="coach@school.edu" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Password</label>
+                    <input type="password" class="form-input" id="auth-password" placeholder="••••••••" required minlength="6">
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: 100%;" id="auth-submit-btn">Create Account</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+        var CONFIG = { API_URL: 'https://api.meetyournewstatscoach.com', CHUNK_SIZE: 5 * 1024 * 1024 };
+        var currentUser = null, currentVideo = null, viewingReportId = null, reportPollInterval = null;
+        var backgroundUpload = { active: false };
+        var authMode = 'signup';
+        var isPolling = false; // Prevent overlapping requests
+        var pollRetryCount = 0;
+        var MAX_POLL_RETRIES = 60; // Stop after 3 minutes (60 * 3 seconds)
+
+        // ===========================================
+        // PDF EXPORT FUNCTIONS
+        // ===========================================
+        
+        var currentReportData = null; // Store report data for PDF generation
+        
+        function downloadPDF() {
+            if (!currentReportData) {
+                showToast('No report loaded', 'error');
+                return;
+            }
+            
+            showToast('Generating PDF...');
+            
+            // Create a printable version of the report
+            var pdfContent = generatePDFContent(currentReportData);
+            
+            // Create temporary container
+            var container = document.createElement('div');
+            container.innerHTML = pdfContent;
+            container.style.position = 'absolute';
+            container.style.left = '-9999px';
+            container.style.top = '0';
+            container.style.width = '800px';
+            document.body.appendChild(container);
+            
+            var opt = {
+                margin: [10, 10, 10, 10],
+                filename: 'CoachIQ_Scouting_Report_' + (currentReportData.opponent || 'Report').replace(/[^a-zA-Z0-9]/g, '_') + '.pdf',
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, logging: false },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+            };
+            
+            html2pdf().set(opt).from(container).save().then(function() {
+                document.body.removeChild(container);
+                showToast('PDF downloaded!');
+            }).catch(function(err) {
+                document.body.removeChild(container);
+                showToast('PDF generation failed', 'error');
+                console.error('PDF error:', err);
             });
         }
-    });
-    userReports.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-    res.json({ reports: userReports });
-});
-
-app.get('/api/reports/:id', (req, res) => {
-    const report = reports.get(req.params.id);
-    if (!report) return res.status(404).json({ error: 'Report not found' });
-    res.json(report);
-});
-
-// Upload endpoints
-app.post('/api/upload/init', (req, res) => {
-    const { fileName, fileSize, totalChunks, userEmail } = req.body;
-    const uploadId = uuidv4();
-    const uploadDir = `/tmp/coachiq_chunks_${uploadId}`;
-    fs.mkdirSync(uploadDir, { recursive: true });
-    uploadSessions.set(uploadId, {
-        id: uploadId, fileName, fileSize, totalChunks, receivedChunks: 0,
-        chunksDir: uploadDir, userEmail, createdAt: new Date().toISOString()
-    });
-    res.json({ uploadId, status: 'ready' });
-});
-
-app.post('/api/upload/chunk', upload.single('chunk'), (req, res) => {
-    const { uploadId, chunkIndex } = req.body;
-    const session = uploadSessions.get(uploadId);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    
-    const chunkPath = path.join(session.chunksDir, `chunk_${chunkIndex.padStart(6, '0')}`);
-    fs.renameSync(req.file.path, chunkPath);
-    session.receivedChunks++;
-    res.json({ received: session.receivedChunks, total: session.totalChunks });
-});
-
-app.post('/api/upload/finalize', async (req, res) => {
-    const { uploadId, opponentName, analysisOptions, userEmail, userName, teamInfo } = req.body;
-    const session = uploadSessions.get(uploadId);
-    if (!session) return res.status(404).json({ error: 'Session not found' });
-    
-    const reportId = uuidv4();
-    reports.set(reportId, {
-        id: reportId, userEmail, userName: userName || 'Coach', opponentName,
-        fileName: session.fileName, status: 'queued', progress: 0,
-        progressText: 'Video received...', createdAt: new Date().toISOString(),
-        teamInfo: teamInfo || null
-    });
-    
-    await sendConfirmationEmail(userEmail, userName, opponentName, reportId);
-    processVideoInBackground(reportId, uploadId, opponentName, analysisOptions || ['defense', 'offense', 'pace'], userEmail, userName, teamInfo);
-    
-    res.json({ reportId, status: 'queued', message: 'Video received!' });
-});
-
-app.post('/api/upload/simple', upload.single('video'), async (req, res) => {
-    try {
-        const { opponentName, analysisOptions, userEmail, userName, teamInfo } = req.body;
-        if (!req.file) return res.status(400).json({ error: 'No video' });
         
-        // Parse teamInfo if it's a string
-        let parsedTeamInfo = null;
-        if (teamInfo) {
-            try {
-                parsedTeamInfo = typeof teamInfo === 'string' ? JSON.parse(teamInfo) : teamInfo;
-            } catch (e) {
-                console.warn('Could not parse teamInfo:', e);
+        function generatePDFContent(report) {
+            var teamInfo = report.teamInfo || {};
+            var opponentColor = teamInfo.opponent?.jerseyColor || '';
+            var yourColor = teamInfo.yourTeam?.jerseyColor || '';
+            
+            var html = '<div style="font-family: Arial, sans-serif; color: #333; padding: 20px; background: #fff;">';
+            
+            // Header
+            html += '<div style="background: linear-gradient(135deg, #FF6B35, #FF8E53); color: white; padding: 30px; border-radius: 12px; text-align: center; margin-bottom: 24px;">';
+            html += '<h1 style="margin: 0; font-size: 28px; letter-spacing: 2px;">COACHIQ SCOUTING REPORT</h1>';
+            html += '<h2 style="margin: 10px 0 0 0; font-size: 36px; font-weight: bold;">' + (report.opponent || 'OPPONENT').toUpperCase() + '</h2>';
+            if (opponentColor) html += '<p style="margin: 8px 0 0 0; opacity: 0.9;">(' + opponentColor.toUpperCase() + ' Jerseys)</p>';
+            html += '</div>';
+            
+            // Team identification
+            if (opponentColor || yourColor) {
+                html += '<div style="display: flex; gap: 20px; margin-bottom: 24px;">';
+                html += '<div style="flex: 1; background: #FFF5F0; border-left: 4px solid #FF6B35; padding: 15px; border-radius: 8px;">';
+                html += '<p style="font-size: 12px; color: #888; margin: 0;">🎯 SCOUTED TEAM</p>';
+                html += '<p style="font-weight: bold; margin: 5px 0 0 0;">' + (teamInfo.opponent?.name || report.opponent) + ' (' + (opponentColor || 'unknown').toUpperCase() + ')</p>';
+                html += '</div>';
+                html += '<div style="flex: 1; background: #F0FFF9; border-left: 4px solid #00D4AA; padding: 15px; border-radius: 8px;">';
+                html += '<p style="font-size: 12px; color: #888; margin: 0;">🏠 YOUR TEAM</p>';
+                html += '<p style="font-weight: bold; margin: 5px 0 0 0;">' + (teamInfo.yourTeam?.name || 'Your Team') + ' (' + (yourColor || 'unknown').toUpperCase() + ')</p>';
+                html += '</div>';
+                html += '</div>';
             }
-        }
-        
-        const reportId = uuidv4();
-        reports.set(reportId, {
-            id: reportId, userEmail, userName: userName || 'Coach', opponentName,
-            fileName: req.file.originalname, status: 'queued', progress: 0,
-            progressText: 'Video received...', createdAt: new Date().toISOString(),
-            teamInfo: parsedTeamInfo
-        });
-        
-        await sendConfirmationEmail(userEmail, userName, opponentName, reportId);
-        processSimpleUploadInBackground(reportId, req.file.path, opponentName,
-            analysisOptions ? JSON.parse(analysisOptions) : ['defense', 'offense', 'pace'], userEmail, userName, parsedTeamInfo);
-        
-        res.json({ reportId, status: 'queued', message: 'Video received!' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ===========================================
-// EMAIL FUNCTIONS
-// ===========================================
-
-async function sendConfirmationEmail(email, name, opponentName, reportId) {
-    if (!process.env.RESEND_API_KEY) {
-        console.log('📧 [SKIP] No RESEND_API_KEY');
-        return;
-    }
-    try {
-        await resend.emails.send({
-            from: 'CoachIQ <reports@coachiq.com>',
-            to: email,
-            subject: `🏀 Analysis Started: ${opponentName}`,
-            html: `<div style="font-family:Arial;max-width:600px;margin:0 auto;"><div style="background:linear-gradient(135deg,#FF6B35,#FF8E53);padding:30px;text-align:center;"><h1 style="color:white;margin:0;">🏀 CoachIQ</h1></div><div style="padding:30px;background:#f9f9f9;"><h2>Hey ${name || 'Coach'}!</h2><p>We've received your film for <strong>${opponentName}</strong>.</p><p>Our AI scout is analyzing:</p><ul><li>All defensive schemes (man, zone, press, junk)</li><li>All offensive sets and actions</li><li>Key player tendencies</li><li>Strategic recommendations</li></ul><p>We'll email you when ready (5-15 min).</p></div></div>`
-        });
-    } catch (e) { console.error('Email error:', e); }
-}
-
-async function sendCompletionEmail(email, name, opponentName, reportId, report) {
-    if (!process.env.RESEND_API_KEY) return;
-    try {
-        const defense = report.defense?.primary?.scheme || report.defense?.primary || 'See report';
-        const pace = report.pace?.rating || '--';
-        const key = report.recommendations?.keysToVictory?.[0] || 'See full report';
-        
-        await resend.emails.send({
-            from: 'CoachIQ <reports@coachiq.com>',
-            to: email,
-            subject: `✅ Report Ready: ${opponentName}`,
-            html: `<div style="font-family:Arial;max-width:600px;margin:0 auto;"><div style="background:linear-gradient(135deg,#00D4AA,#00B894);padding:30px;text-align:center;"><h1 style="color:white;margin:0;">✅ Report Ready!</h1></div><div style="padding:30px;background:#f9f9f9;"><h2>Great news, ${name || 'Coach'}!</h2><p>Your report for <strong>${opponentName}</strong> is ready.</p><div style="background:white;border-radius:10px;padding:20px;margin:20px 0;"><table style="width:100%;"><tr><td style="padding:10px;border-bottom:1px solid #eee;">Primary Defense</td><td style="padding:10px;border-bottom:1px solid #eee;color:#FF6B35;font-weight:bold;text-align:right;">${defense}</td></tr><tr><td style="padding:10px;">Pace Rating</td><td style="padding:10px;color:#00D4AA;font-weight:bold;text-align:right;">${pace}/100</td></tr></table></div><div style="background:white;border-radius:10px;padding:20px;margin:20px 0;border-left:4px solid #00D4AA;"><strong>🔑 Key to Victory:</strong><p style="margin:10px 0 0 0;">${key}</p></div><div style="text-align:center;margin:30px 0;"><a href="https://coachiq.com/reports/${reportId}" style="background:linear-gradient(135deg,#FF6B35,#FF8E53);color:white;padding:15px 40px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block;">View Full Report →</a></div></div></div>`
-        });
-    } catch (e) { console.error('Email error:', e); }
-}
-
-async function sendErrorEmail(email, name, opponentName, error) {
-    if (!process.env.RESEND_API_KEY) return;
-    try {
-        await resend.emails.send({
-            from: 'CoachIQ <reports@coachiq.com>',
-            to: email,
-            subject: `⚠️ Issue: ${opponentName}`,
-            html: `<div style="font-family:Arial;max-width:600px;margin:0 auto;"><div style="background:#FF6B6B;padding:30px;text-align:center;"><h1 style="color:white;margin:0;">⚠️ Issue</h1></div><div style="padding:30px;background:#f9f9f9;"><h2>Hey ${name || 'Coach'},</h2><p>Issue with <strong>${opponentName}</strong> analysis.</p><p><strong>Error:</strong> ${error}</p><p>Try re-uploading a shorter clip (5-10 min) in MP4 format.</p></div></div>`
-        });
-    } catch (e) { console.error('Email error:', e); }
-}
-
-// ===========================================
-// PROCESSING
-// ===========================================
-
-async function processVideoInBackground(reportId, uploadId, opponentName, analysisOptions, userEmail, userName, teamInfo = null) {
-    const session = uploadSessions.get(uploadId);
-    const tempDir = `/tmp/coachiq_${reportId}`;
-    
-    try {
-        fs.mkdirSync(tempDir, { recursive: true });
-        updateReport(reportId, { status: 'processing', progress: 5, progressText: 'Combining video...' });
-        
-        const combinedPath = path.join(tempDir, 'video.mp4');
-        await combineChunks(session.chunksDir, combinedPath);
-        fs.rmSync(session.chunksDir, { recursive: true, force: true });
-        uploadSessions.delete(uploadId);
-        
-        await processVideoFile(reportId, combinedPath, opponentName, analysisOptions, userEmail, userName, tempDir, teamInfo);
-    } catch (error) {
-        console.error('Error:', error);
-        updateReport(reportId, { status: 'failed', error: error.message });
-        await sendErrorEmail(userEmail, userName, opponentName, error.message);
-        cleanup(tempDir);
-    }
-}
-
-async function processSimpleUploadInBackground(reportId, videoPath, opponentName, analysisOptions, userEmail, userName, teamInfo = null) {
-    const tempDir = `/tmp/coachiq_${reportId}`;
-    try {
-        fs.mkdirSync(tempDir, { recursive: true });
-        const originalPath = path.join(tempDir, 'video.mp4');
-        fs.renameSync(videoPath, originalPath);
-        await processVideoFile(reportId, originalPath, opponentName, analysisOptions, userEmail, userName, tempDir, teamInfo);
-    } catch (error) {
-        console.error('Error:', error);
-        updateReport(reportId, { status: 'failed', error: error.message });
-        await sendErrorEmail(userEmail, userName, opponentName, error.message);
-        cleanup(tempDir);
-    }
-}
-
-async function processVideoFile(reportId, videoPath, opponentName, analysisOptions, userEmail, userName, tempDir, teamInfo = null) {
-    try {
-        const videoInfo = await getVideoInfo(videoPath);
-        const fileSizeMB = fs.statSync(videoPath).size / (1024 * 1024);
-        
-        let processedPath = videoPath;
-        if (fileSizeMB > 200) {
-            updateReport(reportId, { progress: 15, progressText: 'Compressing...' });
-            processedPath = path.join(tempDir, 'compressed.mp4');
-            await compressVideo(videoPath, processedPath);
-        }
-        
-        updateReport(reportId, { progress: 30, progressText: 'Extracting frames...' });
-        const frames = await extractFrames(processedPath, tempDir);
-        
-        // Log team info for debugging
-        if (teamInfo) {
-            console.log(`🎽 Team Info: Opponent(${teamInfo.opponent?.name})=${teamInfo.opponent?.jerseyColor}, YourTeam(${teamInfo.yourTeam?.name})=${teamInfo.yourTeam?.jerseyColor}`);
-        }
-        
-        updateReport(reportId, { progress: 45, progressText: 'AI analyzing schemes...' });
-        const analysis = await analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo);
-        
-        updateReport(reportId, { progress: 80, progressText: 'Generating report...' });
-        const report = generateReport(analysis, opponentName, frames.length, videoInfo, teamInfo);
-        
-        reports.set(reportId, {
-            ...reports.get(reportId),
-            status: 'complete', progress: 100, progressText: 'Complete!',
-            report, completedAt: new Date().toISOString()
-        });
-        
-        await sendCompletionEmail(userEmail, userName, opponentName, reportId, report);
-    } catch (error) {
-        throw error;
-    } finally {
-        cleanup(tempDir);
-    }
-}
-
-// ===========================================
-// CLAUDE ANALYSIS
-// ===========================================
-
-async function analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo = null) {
-    if (frames.length === 0) throw new Error('No frames');
-
-    const imageContent = frames.map(f => ({
-        type: 'image',
-        source: { type: 'base64', media_type: 'image/jpeg', data: f.base64 }
-    }));
-
-    const prompt = buildAnalysisPrompt(opponentName, frames.length, analysisOptions, teamInfo);
-
-    console.log('🤖 Analyzing with comprehensive prompts...');
-    if (teamInfo) {
-        console.log(`   Team Info: Opponent=${teamInfo.opponent?.jerseyColor}, YourTeam=${teamInfo.yourTeam?.jerseyColor}`);
-    }
-    
-    const response = await anthropic.messages.create({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 8192,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageContent] }]
-    });
-
-    const text = response.content[0].text;
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
-    
-    if (jsonMatch) {
-        return JSON.parse(jsonMatch[1] || jsonMatch[0]);
-    }
-    return null;
-}
-
-// ===========================================
-// HELPERS
-// ===========================================
-
-function updateReport(reportId, updates) {
-    const current = reports.get(reportId);
-    if (current) reports.set(reportId, { ...current, ...updates });
-}
-
-async function combineChunks(chunksDir, outputPath) {
-    return new Promise((resolve, reject) => {
-        const chunks = fs.readdirSync(chunksDir).filter(f => f.startsWith('chunk_')).sort();
-        const writeStream = fs.createWriteStream(outputPath);
-        let index = 0;
-        function writeNext() {
-            if (index >= chunks.length) { writeStream.end(); resolve(); return; }
-            const readStream = fs.createReadStream(path.join(chunksDir, chunks[index]));
-            readStream.pipe(writeStream, { end: false });
-            readStream.on('end', () => { index++; writeNext(); });
-            readStream.on('error', reject);
-        }
-        writeStream.on('error', reject);
-        writeNext();
-    });
-}
-
-function getVideoInfo(videoPath) {
-    return new Promise((resolve, reject) => {
-        ffmpeg.ffprobe(videoPath, (err, metadata) => {
-            if (err) return reject(err);
-            const video = metadata.streams.find(s => s.codec_type === 'video');
-            resolve({ duration: metadata.format.duration, width: video?.width, height: video?.height });
-        });
-    });
-}
-
-function compressVideo(inputPath, outputPath) {
-    return new Promise((resolve, reject) => {
-        ffmpeg(inputPath)
-            .outputOptions(['-c:v libx264', '-preset fast', '-crf 28', '-vf scale=854:-2', '-t 600', '-an', '-y'])
-            .output(outputPath)
-            .on('end', () => resolve(outputPath))
-            .on('error', reject)
-            .run();
-    });
-}
-
-async function extractFrames(videoPath, outputDir) {
-    return new Promise((resolve, reject) => {
-        const frames = [];
-        const framesDir = path.join(outputDir, 'frames');
-        fs.mkdirSync(framesDir, { recursive: true });
-
-        ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/5,scale=800:-1', '-frames:v', '24', '-q:v', '4'])
-            .output(path.join(framesDir, 'frame_%03d.jpg'))
-            .on('end', () => {
-                const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
-                for (const file of files) {
-                    const filePath = path.join(framesDir, file);
-                    frames.push({ filename: file, base64: fs.readFileSync(filePath).toString('base64') });
-                    fs.unlinkSync(filePath);
+            
+            // Key Stats Grid
+            html += '<div style="background: #f5f5f5; border-radius: 12px; padding: 20px; margin-bottom: 24px;">';
+            html += '<h3 style="margin: 0 0 16px 0; color: #FF6B35;">📊 OPPONENT STATISTICS</h3>';
+            html += '<table style="width: 100%; border-collapse: collapse;">';
+            html += '<tr>';
+            html += '<td style="padding: 12px; background: white; border-radius: 8px; text-align: center; width: 25%;"><div style="font-size: 11px; color: #888;">Their Defense</div><div style="font-size: 20px; font-weight: bold; color: #FF6B35;">' + (report.defense?.primary?.scheme || report.defense?.primary || '--') + '</div></td>';
+            html += '<td style="padding: 12px; background: white; border-radius: 8px; text-align: center; width: 25%;"><div style="font-size: 11px; color: #888;">Their Pace</div><div style="font-size: 20px; font-weight: bold; color: #00D4AA;">' + (report.paceAnalysis?.paceRating || report.pace?.rating || '--') + '</div></td>';
+            html += '<td style="padding: 12px; background: white; border-radius: 8px; text-align: center; width: 25%;"><div style="font-size: 11px; color: #888;">Poss/Game</div><div style="font-size: 20px; font-weight: bold;">' + (report.paceAnalysis?.estimatedPossessionsPerGame || '--') + '</div></td>';
+            html += '<td style="padding: 12px; background: white; border-radius: 8px; text-align: center; width: 25%;"><div style="font-size: 11px; color: #888;">Confidence</div><div style="font-size: 20px; font-weight: bold; color: #00D4AA;">' + (report.confidence || '--') + '%</div></td>';
+            html += '</tr>';
+            html += '</table>';
+            html += '</div>';
+            
+            // Must Stop Box
+            if (report.teamValueIdentification?.mostValuableAspect) {
+                html += '<div style="background: linear-gradient(135deg, #FF6B35, #FF8E53); color: white; padding: 20px; border-radius: 12px; margin-bottom: 24px;">';
+                html += '<h3 style="margin: 0 0 8px 0;">🎯 OPPONENT\'S #1 WEAPON — MUST STOP TO WIN</h3>';
+                html += '<p style="margin: 0; font-size: 18px;">' + report.teamValueIdentification.mostValuableAspect + '</p>';
+                html += '</div>';
+            }
+            
+            // Defense Section
+            html += '<div style="margin-bottom: 24px; page-break-inside: avoid;">';
+            html += '<h3 style="color: #FF6B35; border-bottom: 2px solid #FF6B35; padding-bottom: 8px;">🛡️ OPPONENT\'S DEFENSE</h3>';
+            if (report.defense?.primary?.details) html += '<p style="color: #666;">' + report.defense.primary.details + '</p>';
+            if (report.defense?.breakdown) {
+                html += '<table style="width: 100%; border-collapse: collapse; margin-top: 12px;">';
+                report.defense.breakdown.forEach(function(d) {
+                    html += '<tr><td style="padding: 8px; border-bottom: 1px solid #eee;">' + d.name + '</td><td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold; color: #FF6B35;">' + d.percentage + '%</td></tr>';
+                });
+                html += '</table>';
+            }
+            if (report.defense?.weaknesses?.length > 0) {
+                html += '<p style="margin-top: 16px; font-weight: bold; color: #FF6B35;">Weaknesses to exploit:</p>';
+                report.defense.weaknesses.forEach(function(w) {
+                    html += '<p style="color: #666; margin: 4px 0;">• ' + (typeof w === 'string' ? w : w.weakness) + '</p>';
+                });
+            }
+            html += '</div>';
+            
+            // Offense Section
+            html += '<div style="margin-bottom: 24px; page-break-inside: avoid;">';
+            html += '<h3 style="color: #FF6B35; border-bottom: 2px solid #FF6B35; padding-bottom: 8px;">⚡ OPPONENT\'S OFFENSE</h3>';
+            if (report.offense?.primary?.details) html += '<p style="color: #666;">' + report.offense.primary.details + '</p>';
+            if (report.offense?.setsAndActions?.length > 0) {
+                html += '<table style="width: 100%; border-collapse: collapse; margin-top: 12px;">';
+                report.offense.setsAndActions.forEach(function(s) {
+                    html += '<tr><td style="padding: 8px; border-bottom: 1px solid #eee;">' + s.name + '</td><td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right; font-weight: bold; color: #00D4AA;">' + s.frequency + '%</td></tr>';
+                });
+                html += '</table>';
+            }
+            html += '</div>';
+            
+            // Key Players
+            if (report.keyPlayers?.length > 0) {
+                html += '<div style="margin-bottom: 24px; page-break-inside: avoid;">';
+                html += '<h3 style="color: #FF6B35; border-bottom: 2px solid #FF6B35; padding-bottom: 8px;">👤 OPPONENT\'S KEY PLAYERS</h3>';
+                report.keyPlayers.forEach(function(p) {
+                    html += '<div style="background: #f9f9f9; padding: 12px; border-radius: 8px; margin-bottom: 8px;">';
+                    html += '<strong>' + (p.number || p.jersey || '') + ' ' + (p.position || '') + '</strong>';
+                    if (p.role) html += ' — ' + p.role;
+                    if (p.tendencies) html += '<p style="color: #666; margin: 4px 0 0 0; font-size: 13px;">' + p.tendencies + '</p>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+            
+            // Recommendations
+            if (report.recommendations) {
+                html += '<div style="margin-bottom: 24px; page-break-inside: avoid;">';
+                html += '<h3 style="color: #00D4AA; border-bottom: 2px solid #00D4AA; padding-bottom: 8px;">💡 YOUR GAME PLAN</h3>';
+                if (report.recommendations.offensive?.length > 0) {
+                    html += '<p style="font-weight: bold; margin-top: 12px;">Offensive Keys:</p>';
+                    report.recommendations.offensive.forEach(function(r) {
+                        html += '<p style="color: #666; margin: 4px 0;">✓ ' + (typeof r === 'string' ? r : r.recommendation || r.key) + '</p>';
+                    });
                 }
-                resolve(frames);
-            })
-            .on('error', reject)
-            .run();
-    });
-}
-
-function generateReport(analysis, opponentName, frameCount, videoInfo, teamInfo = null) {
-    return {
-        opponent: opponentName,
-        generatedAt: new Date().toISOString(),
-        framesAnalyzed: frameCount,
-        videoDuration: videoInfo?.duration ? Math.round(videoInfo.duration) : null,
-        skillLevel: analysis?.skillLevel || { estimated: 'unknown' },
-        confidence: analysis?.confidence?.overall || 75,
-        
-        // Team Identification Info
-        teamInfo: teamInfo ? {
-            opponent: {
-                name: teamInfo.opponent?.name || opponentName,
-                jerseyColor: teamInfo.opponent?.jerseyColor || 'unknown'
-            },
-            yourTeam: {
-                name: teamInfo.yourTeam?.name || 'Your Team',
-                jerseyColor: teamInfo.yourTeam?.jerseyColor || 'unknown'
+                if (report.recommendations.defensive?.length > 0) {
+                    html += '<p style="font-weight: bold; margin-top: 12px;">Defensive Keys:</p>';
+                    report.recommendations.defensive.forEach(function(r) {
+                        html += '<p style="color: #666; margin: 4px 0;">✓ ' + (typeof r === 'string' ? r : r.recommendation || r.key) + '</p>';
+                    });
+                }
+                html += '</div>';
             }
-        } : null,
+            
+            // Practice Plan
+            if (report.recommendations?.practiceEmphasis?.length > 0) {
+                html += '<div style="margin-bottom: 24px; page-break-inside: avoid;">';
+                html += '<h3 style="color: #00D4AA; border-bottom: 2px solid #00D4AA; padding-bottom: 8px;">📋 YOUR PRACTICE PLAN</h3>';
+                report.recommendations.practiceEmphasis.forEach(function(drill) {
+                    html += '<div style="background: #f9f9f9; padding: 12px; border-radius: 8px; margin-bottom: 8px; border-left: 3px solid #00D4AA;">';
+                    html += '<strong>' + (drill.drill || drill.name || 'Drill') + '</strong>';
+                    if (drill.duration) html += ' <span style="color: #888;">(' + drill.duration + ')</span>';
+                    if (drill.purpose) html += '<p style="color: #666; margin: 4px 0 0 0; font-size: 13px;">' + drill.purpose + '</p>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+            
+            // Footer
+            html += '<div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #888; font-size: 12px;">';
+            html += '<p>Generated by CoachIQ AI Video Analysis • ' + new Date().toLocaleDateString() + '</p>';
+            html += '<p>Frames Analyzed: ' + (report.framesAnalyzed || '--') + ' • AI Confidence: ' + (report.confidence || '--') + '%</p>';
+            html += '<p style="margin-top: 8px;"><strong>meetyournewstatscoach.com</strong></p>';
+            html += '</div>';
+            
+            html += '</div>';
+            return html;
+        }
         
-        // Core Analysis
-        defense: analysis?.defense || { primary: { scheme: 'Unknown' } },
-        offense: analysis?.offense || { primary: { system: 'Unknown' } },
-        keyPlayers: analysis?.keyPlayers || [],
-        pace: analysis?.pace || { rating: 50 },
+        function printReport() {
+            if (!currentReportData) {
+                showToast('No report loaded', 'error');
+                return;
+            }
+            
+            var printContent = generatePDFContent(currentReportData);
+            var printWindow = window.open('', '_blank');
+            printWindow.document.write('<html><head><title>CoachIQ Scouting Report - ' + currentReportData.opponent + '</title></head><body>');
+            printWindow.document.write(printContent);
+            printWindow.document.write('\n\n</body></html>');
+            printWindow.document.close();
+            printWindow.print();
+        }
         
-        // Enhanced Analytics
-        paceAndTempo: analysis?.paceAndTempo || {
-            possessionsPerGameEstimate: null,
-            paceRating: null,
-            paceCategory: 'unknown',
-            shotClockUsage: {},
-            transitionFrequency: {}
-        },
-        
-        offensiveSetEfficiency: analysis?.offensiveSetEfficiency || {
-            setBreakdown: [],
-            mostEfficientSet: null,
-            leastEfficientSet: null
-        },
-        
-        playerSpecificSets: analysis?.playerSpecificSets || [],
-        
-        ballMovementAnalytics: analysis?.ballMovementAnalytics || {
-            reversalsPerPossession: null,
-            passesBeforeShot: null,
-            ballMovementRating: 'unknown'
-        },
-        
-        turnoverAnalysis: analysis?.turnoverAnalysis || {
-            estimatedTurnoverRate: null,
-            turnoverConversion: {},
-            highTurnoverSituations: []
-        },
-        
-        teamValueIdentification: analysis?.teamValueIdentification || {
-            offensiveIdentity: {},
-            defensiveIdentity: {},
-            goToPlays: {},
-            mostValuableAspect: null
-        },
-        
-        // NEW: Detailed Set Tracking
-        offensiveSetTracking: analysis?.offensiveSetTracking || {
-            totalPossessionsObserved: null,
-            setBySetBreakdown: [],
-            mostRunSet: null,
-            mostEfficientSet: null,
-            leastEfficientSet: null
-        },
-        
-        // NEW: Player-Set Assignments
-        playerSetAssignments: analysis?.playerSetAssignments || [],
-        
-        // NEW: Pace Analysis
-        paceAnalysis: analysis?.paceAnalysis || {
-            possessionsObserved: null,
-            estimatedPossessionsPerGame: null,
-            paceCategory: 'unknown',
-            averagePossessionLength: null,
-            shotClockBreakdown: {}
-        },
-        
-        // NEW: Ball Movement Metrics
-        ballMovementMetrics: analysis?.ballMovementMetrics || {
-            totalBallReversals: null,
-            reversalsPerPossession: null,
-            passesPerPossession: null,
-            touchDistribution: {}
-        },
-        
-        // NEW: Turnover-to-Score Analysis
-        turnoverToScoreAnalysis: analysis?.turnoverToScoreAnalysis || {
-            opponentTurnoversObserved: null,
-            turnoversConvertedToScores: null,
-            turnoverConversionRate: null,
-            conversionBreakdown: {}
-        },
-        
-        // Existing fields
-        specialSituations: analysis?.specialSituations || {},
-        teamStrengths: analysis?.teamStrengths || [],
-        teamWeaknesses: analysis?.teamWeaknesses || [],
-        recommendations: analysis?.recommendations || {}
-    };
-}
+        function copyReportLink() {
+            if (viewingReportId) {
+                var link = window.location.origin + '/reports/' + viewingReportId;
+                navigator.clipboard.writeText(link).then(function() {
+                    showToast('Link copied!');
+                }).catch(function() {
+                    showToast('Could not copy link', 'error');
+                });
+            } else {
+                showToast('No report to share', 'error');
+            }
+        }
 
-function cleanup(dir) {
-    try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
-}
+        function showToast(msg, type) {
+            var t = document.createElement('div');
+            t.className = 'toast ' + (type || 'success');
+            t.innerHTML = '<span>' + msg + '</span>';
+            document.getElementById('toast-container').appendChild(t);
+            setTimeout(function() { t.remove(); }, 4000);
+        }
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-    console.log(`🏀 CoachIQ v6.0 COMPREHENSIVE running on port ${PORT}`);
-    console.log(`📊 All skill levels: Youth → Middle School → High School → College → Pro`);
-    console.log(`🛡️ All defensive schemes: 40+ variations`);
-    console.log(`⚡ All offensive sets: 60+ actions and plays`);
-});
+        function showSection(s) {
+            // Clear polling when navigating away
+            if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+            isPolling = false;
+            pollRetryCount = 0;
+            
+            document.querySelectorAll('[id$="-section"]').forEach(function(el) { el.classList.add('section-hidden'); });
+            var t = document.getElementById(s + '-section');
+            if (t) t.classList.remove('section-hidden');
+            if (s === 'analyze' && !backgroundUpload.active) resetAnalyze();
+            if (s === 'dashboard') loadDashboard();
+            document.getElementById('user-dropdown').classList.remove('active');
+            window.scrollTo(0, 0);
+        }
+
+        function resetAnalyze() {
+            document.getElementById('step-upload').style.display = 'block';
+            document.getElementById('step-details').style.display = 'none';
+            document.getElementById('step-success').style.display = 'none';
+            document.getElementById('continue-btn').disabled = true;
+            clearVideo();
+            if (currentUser) {
+                document.getElementById('user-email').value = currentUser.email || '';
+                document.getElementById('user-name').value = currentUser.name || '';
+            }
+        }
+
+        function openAuthModal(mode) {
+            authMode = mode || 'signup';
+            switchAuthTab(authMode);
+            document.getElementById('auth-modal').classList.add('active');
+        }
+        function closeAuthModal() { document.getElementById('auth-modal').classList.remove('active'); }
+        function switchAuthTab(mode) {
+            authMode = mode;
+            document.getElementById('tab-login').classList.toggle('active', mode === 'login');
+            document.getElementById('tab-signup').classList.toggle('active', mode === 'signup');
+            document.getElementById('name-group').style.display = mode === 'signup' ? 'block' : 'none';
+            document.getElementById('auth-submit-btn').textContent = mode === 'login' ? 'Sign In' : 'Create Account';
+        }
+
+        function handleAuth(e) {
+            e.preventDefault();
+            currentUser = { email: document.getElementById('auth-email').value, name: document.getElementById('auth-name').value || 'Coach', subscription: 'free' };
+            localStorage.setItem('coachiq_user', JSON.stringify(currentUser));
+            updateUserUI();
+            closeAuthModal();
+            showToast(authMode === 'login' ? 'Welcome back!' : 'Account created!');
+            showSection('analyze');
+        }
+
+        function updateUserUI() {
+            if (currentUser) {
+                document.getElementById('auth-buttons').style.display = 'none';
+                document.getElementById('user-section').style.display = 'block';
+                document.getElementById('nav-dashboard').style.display = 'inline';
+                document.getElementById('user-initial').textContent = (currentUser.email || 'C')[0].toUpperCase();
+                document.getElementById('user-dropdown-name').textContent = currentUser.name || 'Coach';
+                document.getElementById('user-dropdown-email').textContent = currentUser.email || '';
+                var badge = document.getElementById('user-plan-badge');
+                badge.textContent = currentUser.subscription === 'pro' ? 'PRO' : 'FREE TRIAL';
+                badge.className = 'plan-badge ' + (currentUser.subscription === 'pro' ? 'pro' : 'free');
+            } else {
+                document.getElementById('auth-buttons').style.display = 'flex';
+                document.getElementById('user-section').style.display = 'none';
+                document.getElementById('nav-dashboard').style.display = 'none';
+            }
+        }
+
+        function logout() {
+            currentUser = null;
+            localStorage.removeItem('coachiq_user');
+            updateUserUI();
+            document.getElementById('user-dropdown').classList.remove('active');
+            showSection('home');
+            showToast('Signed out');
+        }
+
+        function toggleUserMenu() { document.getElementById('user-dropdown').classList.toggle('active'); }
+
+        function subscribe(plan) {
+            if (!currentUser) { openAuthModal('signup'); return; }
+            showToast('Redirecting to checkout...');
+        }
+
+        function showUploadBanner() { document.getElementById('upload-banner').classList.add('active'); document.body.classList.add('uploading'); }
+        function hideUploadBanner() { document.getElementById('upload-banner').classList.remove('active'); document.body.classList.remove('uploading'); }
+        function minimizeBanner() { document.getElementById('upload-banner').classList.remove('active'); }
+        function updateUploadProgress(pct, speed) {
+            document.getElementById('banner-progress-fill').style.width = pct + '%';
+            document.getElementById('banner-percent').textContent = pct + '%';
+            document.getElementById('banner-speed').textContent = speed;
+        }
+        function showUploadComplete(name) {
+            document.getElementById('banner-title').textContent = 'Upload complete: ' + name;
+            document.getElementById('banner-subtitle').textContent = 'Analysis started';
+            document.getElementById('banner-progress-fill').style.width = '100%';
+            setTimeout(function() { hideUploadBanner(); backgroundUpload.active = false; }, 5000);
+        }
+
+        function handleVideoFile(file) {
+            if (backgroundUpload.active) { showToast('Upload in progress', 'error'); return; }
+            if (!file.type.startsWith('video/')) { showToast('Select a video file', 'error'); return; }
+            var sizeMB = file.size / (1024 * 1024);
+            currentVideo = { file: file, name: file.name, size: sizeMB >= 1024 ? (sizeMB / 1024).toFixed(2) + ' GB' : sizeMB.toFixed(1) + ' MB' };
+            document.getElementById('preview-video').src = URL.createObjectURL(file);
+            document.getElementById('video-name').textContent = file.name;
+            document.getElementById('video-size').textContent = ' · ' + currentVideo.size;
+            document.getElementById('video-preview').style.display = 'block';
+            document.getElementById('upload-zone').style.display = 'none';
+            document.getElementById('continue-btn').disabled = false;
+        }
+
+        function clearVideo() {
+            currentVideo = null;
+            document.getElementById('preview-video').src = '';
+            document.getElementById('video-preview').style.display = 'none';
+            document.getElementById('upload-zone').style.display = 'block';
+            document.getElementById('file-input').value = '';
+            document.getElementById('continue-btn').disabled = true;
+        }
+
+        function goToStep2() { if (!currentVideo) return; document.getElementById('step-upload').style.display = 'none'; document.getElementById('step-details').style.display = 'block'; }
+        function goToStep1() { document.getElementById('step-details').style.display = 'none'; document.getElementById('step-upload').style.display = 'block'; }
+
+        async function startBackgroundUpload() {
+            var opponentName = document.getElementById('opponent-name').value.trim();
+            var yourTeamName = document.getElementById('your-team-name').value.trim();
+            var userEmail = document.getElementById('user-email').value.trim();
+            var userName = document.getElementById('user-name').value.trim();
+            
+            // Get team colors
+            var opponentColor = document.getElementById('opponent-color').value;
+            var opponentColorCustom = document.getElementById('opponent-color-custom').value.trim();
+            var yourColor = document.getElementById('your-color').value;
+            var yourColorCustom = document.getElementById('your-color-custom').value.trim();
+            
+            // Use custom color if provided, otherwise use dropdown
+            var finalOpponentColor = opponentColorCustom || opponentColor || 'unknown';
+            var finalYourColor = yourColorCustom || yourColor || 'unknown';
+            
+            if (!opponentName) { showToast('Enter opponent name', 'error'); return; }
+            if (!userEmail) { showToast('Enter your email', 'error'); return; }
+            if (!currentVideo) return;
+            
+            // Warn if colors not specified
+            if (finalOpponentColor === 'unknown' || finalYourColor === 'unknown') {
+                if (!confirm('Team colors not fully specified. Analysis may not clearly distinguish between teams. Continue anyway?')) {
+                    return;
+                }
+            }
+            
+            var options = []; document.querySelectorAll('.option.selected').forEach(function(el) { options.push(el.dataset.option); });
+            
+            // Build team info object
+            var teamInfo = {
+                opponent: {
+                    name: opponentName,
+                    jerseyColor: finalOpponentColor
+                },
+                yourTeam: {
+                    name: yourTeamName || 'Your Team',
+                    jerseyColor: finalYourColor
+                }
+            };
+            
+            currentUser = { email: userEmail, name: userName || 'Coach', subscription: currentUser?.subscription || 'free' };
+            localStorage.setItem('coachiq_user', JSON.stringify(currentUser));
+            updateUserUI();
+            document.getElementById('step-details').style.display = 'none';
+            document.getElementById('step-success').style.display = 'block';
+            document.getElementById('confirm-email').textContent = userEmail;
+            backgroundUpload.active = true;
+            showUploadBanner();
+            updateUploadProgress(0, 'Starting...');
+            showToast('Upload started!');
+            try {
+                var file = currentVideo.file, sizeMB = file.size / (1024 * 1024);
+                if (sizeMB > 100) await uploadChunked(file, opponentName, options, userEmail, userName, teamInfo);
+                else await uploadSimple(file, opponentName, options, userEmail, userName, teamInfo);
+                showUploadComplete(opponentName);
+                showToast('Upload complete!');
+            } catch (e) { hideUploadBanner(); backgroundUpload.active = false; showToast('Upload failed', 'error'); }
+        }
+
+        async function uploadSimple(file, opponentName, options, userEmail, userName, teamInfo) {
+            var formData = new FormData();
+            formData.append('video', file);
+            formData.append('opponentName', opponentName);
+            formData.append('analysisOptions', JSON.stringify(options));
+            formData.append('userEmail', userEmail);
+            formData.append('userName', userName);
+            formData.append('teamInfo', JSON.stringify(teamInfo));
+            return new Promise(function(resolve, reject) {
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', CONFIG.API_URL + '/api/upload/simple');
+                xhr.upload.onprogress = function(e) { if (e.lengthComputable) updateUploadProgress(Math.round((e.loaded / e.total) * 100), (e.loaded / 1024 / 1024).toFixed(1) + ' MB'); };
+                xhr.onload = function() { xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(); };
+                xhr.onerror = reject;
+                xhr.send(formData);
+            });
+        }
+
+        async function uploadChunked(file, opponentName, options, userEmail, userName, teamInfo) {
+            var totalChunks = Math.ceil(file.size / CONFIG.CHUNK_SIZE);
+            var initRes = await fetch(CONFIG.API_URL + '/api/upload/init', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fileName: file.name, fileSize: file.size, totalChunks: totalChunks, userEmail: userEmail }) });
+            var uploadId = (await initRes.json()).uploadId, startTime = Date.now(), uploaded = 0;
+            for (var i = 0; i < totalChunks; i++) {
+                var start = i * CONFIG.CHUNK_SIZE, end = Math.min(start + CONFIG.CHUNK_SIZE, file.size);
+                var formData = new FormData(); formData.append('chunk', file.slice(start, end)); formData.append('uploadId', uploadId); formData.append('chunkIndex', String(i).padStart(6, '0'));
+                await fetch(CONFIG.API_URL + '/api/upload/chunk', { method: 'POST', body: formData });
+                uploaded += (end - start);
+                updateUploadProgress(Math.round((uploaded / file.size) * 100), (uploaded / ((Date.now() - startTime) / 1000) / 1024 / 1024).toFixed(1) + ' MB/s');
+            }
+            await fetch(CONFIG.API_URL + '/api/upload/finalize', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uploadId: uploadId, opponentName: opponentName, analysisOptions: options, userEmail: userEmail, userName: userName, teamInfo: teamInfo }) });
+        }
+
+        async function loadDashboard() {
+            if (!currentUser) { openAuthModal('login'); return; }
+            document.getElementById('dashboard-loading').style.display = 'block';
+            document.getElementById('dashboard-empty').style.display = 'none';
+            document.getElementById('dashboard-reports').style.display = 'none';
+            try {
+                var res = await fetch(CONFIG.API_URL + '/api/users/' + encodeURIComponent(currentUser.email) + '/reports');
+                var data = await res.json();
+                document.getElementById('dashboard-loading').style.display = 'none';
+                if (!data.reports || data.reports.length === 0) { document.getElementById('dashboard-empty').style.display = 'block'; return; }
+                var html = '';
+                data.reports.forEach(function(r) {
+                    var statusClass = 'status-' + r.status;
+                    var statusText = r.status === 'complete' ? 'Ready' : r.status === 'processing' ? 'Processing ' + (r.progress || 0) + '%' : r.status === 'queued' ? 'Queued' : 'Failed';
+                    html += '<div class="report-card" onclick="viewReport(\'' + r.id + '\')"><div><h4>' + r.opponentName + '</h4><p>' + new Date(r.createdAt).toLocaleDateString() + '</p></div><span class="status-badge ' + statusClass + '">' + statusText + '</span></div>';
+                });
+                document.getElementById('dashboard-reports').innerHTML = html;
+                document.getElementById('dashboard-reports').style.display = 'flex';
+            } catch (e) { document.getElementById('dashboard-loading').style.display = 'none'; document.getElementById('dashboard-empty').style.display = 'block'; }
+        }
+
+        async function viewReport(reportId) {
+            viewingReportId = reportId;
+            
+            // Clear any existing poll and reset state
+            if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+            isPolling = false;
+            pollRetryCount = 0;
+            
+            showSection('report');
+            document.getElementById('report-loading').style.display = 'block';
+            document.getElementById('report-processing').style.display = 'none';
+            document.getElementById('report-content').style.display = 'none';
+            document.getElementById('report-error').style.display = 'none';
+            await loadReport(reportId);
+        }
+
+        async function loadReport(reportId) {
+            // Prevent overlapping requests
+            if (isPolling) return;
+            isPolling = true;
+            
+            try {
+                var res = await fetch(CONFIG.API_URL + '/api/reports/' + reportId);
+                
+                if (!res.ok) {
+                    throw new Error('Server returned ' + res.status);
+                }
+                
+                var data = await res.json();
+                document.getElementById('report-loading').style.display = 'none';
+                document.getElementById('view-report-title').textContent = '📋 ' + (data.opponentName || 'Report');
+                
+                if (data.status === 'complete' && data.report) {
+                    // Stop polling - report is ready
+                    if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+                    pollRetryCount = 0;
+                    displayReportContent(data.report);
+                } else if (data.status === 'failed') {
+                    // Stop polling - report failed
+                    if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+                    pollRetryCount = 0;
+                    document.getElementById('report-error').style.display = 'block';
+                    document.getElementById('report-error-message').textContent = data.error || 'Analysis failed';
+                } else {
+                    // Still processing - show progress and continue polling
+                    document.getElementById('report-processing').style.display = 'block';
+                    document.getElementById('report-processing-text').textContent = data.progressText || 'Processing...';
+                    document.getElementById('report-progress-fill').style.width = (data.progress || 0) + '%';
+                    
+                    pollRetryCount++;
+                    if (pollRetryCount >= MAX_POLL_RETRIES) {
+                        // Stop after max retries
+                        if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+                        document.getElementById('report-processing-text').textContent = 'Still processing. Refresh page to check status.';
+                    } else if (!reportPollInterval) {
+                        // Start polling if not already polling (5 second interval)
+                        reportPollInterval = setInterval(function() { loadReport(reportId); }, 5000);
+                    }
+                }
+            } catch (e) {
+                console.error('Error loading report:', e);
+                pollRetryCount++;
+                
+                if (pollRetryCount >= MAX_POLL_RETRIES) {
+                    if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+                    document.getElementById('report-loading').style.display = 'none';
+                    document.getElementById('report-error').style.display = 'block';
+                    document.getElementById('report-error-message').textContent = 'Failed to load report. Please try again later.';
+                }
+                // Otherwise let the interval retry
+            } finally {
+                isPolling = false;
+            }
+        }
+
+        function displayReportContent(report) {
+            // Store report data for PDF export
+            currentReportData = report;
+            
+            // Stop any polling
+            if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+            isPolling = false;
+            pollRetryCount = 0;
+            
+            document.getElementById('report-processing').style.display = 'none';
+            document.getElementById('report-content').style.display = 'block';
+            document.getElementById('report-date').textContent = 'Generated ' + new Date(report.generatedAt).toLocaleDateString();
+            
+            // Opponent Banner
+            document.getElementById('opponent-banner-name').textContent = (report.opponent || 'OPPONENT').toUpperCase();
+            
+            // Team Info Banner
+            var teamInfo = report.teamInfo;
+            if (teamInfo && (teamInfo.opponent?.jerseyColor || teamInfo.yourTeam?.jerseyColor)) {
+                document.getElementById('team-info-banner').style.display = 'block';
+                document.getElementById('team-opponent-name').textContent = (teamInfo.opponent?.name || report.opponent) + ' (' + (teamInfo.opponent?.jerseyColor || 'unknown').toUpperCase() + ' jerseys)';
+                document.getElementById('team-your-name').textContent = (teamInfo.yourTeam?.name || 'Your Team') + ' (' + (teamInfo.yourTeam?.jerseyColor || 'unknown').toUpperCase() + ' jerseys)';
+                document.getElementById('opponent-banner-color').textContent = '(' + (teamInfo.opponent?.jerseyColor || '').toUpperCase() + ' jerseys)';
+                
+                // Set color swatches
+                var colorMap = {
+                    'dark': '#1a1a1a', 'black': '#1a1a1a', 'white': '#ffffff', 'red': '#dc2626',
+                    'blue': '#2563eb', 'navy': '#1e3a8a', 'light-blue': '#38bdf8', 'green': '#16a34a',
+                    'dark-green': '#15803d', 'yellow': '#eab308', 'orange': '#ea580c', 'purple': '#9333ea',
+                    'maroon': '#7f1d1d', 'gray': '#6b7280', 'grey': '#6b7280', 'pink': '#ec4899'
+                };
+                var oppColor = colorMap[teamInfo.opponent?.jerseyColor?.toLowerCase()] || '#888';
+                var yourColor = colorMap[teamInfo.yourTeam?.jerseyColor?.toLowerCase()] || '#888';
+                document.getElementById('team-opponent-color').style.background = oppColor;
+                document.getElementById('team-opponent-color').style.border = oppColor === '#ffffff' ? '2px solid #ccc' : 'none';
+                document.getElementById('team-your-color').style.background = yourColor;
+                document.getElementById('team-your-color').style.border = yourColor === '#ffffff' ? '2px solid #ccc' : 'none';
+            } else {
+                document.getElementById('team-info-banner').style.display = 'none';
+                document.getElementById('opponent-banner-color').textContent = '';
+            }
+            
+            // Top Stats (all OPPONENT stats)
+            document.getElementById('stat-defense').textContent = report.defense?.primary?.scheme || report.defense?.primary || '--';
+            document.getElementById('stat-pace').textContent = report.paceAnalysis?.paceRating || report.paceAndTempo?.paceRating || report.pace?.rating || '--';
+            document.getElementById('stat-possessions').textContent = report.paceAnalysis?.estimatedPossessionsPerGame || report.paceAndTempo?.possessionsPerGameEstimate || '--';
+            document.getElementById('stat-reversals').textContent = report.ballMovementMetrics?.reversalsPerPossession || report.ballMovementAnalytics?.reversalsPerPossession || '--';
+            document.getElementById('stat-passes').textContent = report.ballMovementMetrics?.passesPerPossession || report.ballMovementAnalytics?.passesBeforeShot || '--';
+            var toConv = report.turnoverToScoreAnalysis?.turnoverConversionRate || report.turnoverAnalysis?.turnoverConversion?.conversionRate;
+            document.getElementById('stat-toconversion').textContent = toConv ? toConv + '%' : '--';
+            document.getElementById('stat-frames').textContent = report.framesAnalyzed || '--';
+            document.getElementById('stat-confidence').textContent = (report.confidence || '--') + '%';
+
+            // Must Stop Box
+            var tv = report.teamValueIdentification;
+            if (tv?.mostValuableAspect) {
+                document.getElementById('must-stop-box').style.display = 'block';
+                document.getElementById('must-stop-text').textContent = tv.mostValuableAspect;
+            } else {
+                document.getElementById('must-stop-box').style.display = 'none';
+            }
+
+            // Defense Section
+            var defHtml = '';
+            if (report.defense?.primary?.details) defHtml += '<p style="margin-bottom: 16px; color: var(--text-muted);">' + report.defense.primary.details + '</p>';
+            if (report.defense?.breakdown) report.defense.breakdown.forEach(function(d) { defHtml += '<div class="report-item"><span>' + d.name + '</span><span class="report-item-value">' + d.percentage + '%</span></div>'; });
+            if (report.defense?.weaknesses?.length > 0) {
+                defHtml += '<p style="margin-top: 16px; font-weight: 700; color: var(--orange);">Weaknesses to exploit:</p>';
+                report.defense.weaknesses.forEach(function(w) { defHtml += '<p style="color: var(--text-muted); padding: 8px 0;">• ' + (typeof w === 'string' ? w : w.weakness + (w.howToExploit ? ' — ' + w.howToExploit : '')) + '</p>'; });
+            }
+            document.getElementById('defense-breakdown').innerHTML = defHtml || '<p style="color: var(--text-muted);">No data</p>';
+
+            // Offense Section
+            var offHtml = '';
+            if (report.offense?.primary?.details) offHtml += '<p style="margin-bottom: 16px; color: var(--text-muted);">' + report.offense.primary.details + '</p>';
+            if (report.offense?.setsAndActions?.length > 0) report.offense.setsAndActions.forEach(function(s) { offHtml += '<div class="report-item"><span>' + s.name + '</span><span class="report-item-value">' + s.frequency + '%</span></div>'; });
+            else if (report.offense?.topPlays) report.offense.topPlays.forEach(function(p) { offHtml += '<div class="report-item"><span>' + p.name + '</span><span class="report-item-value">' + p.percentage + '%</span></div>'; });
+            document.getElementById('offense-breakdown').innerHTML = offHtml || '<p style="color: var(--text-muted);">No data</p>';
+
+            // Set Efficiency & Ball Movement
+            var effHtml = '';
+            var setData = report.offensiveSetTracking?.setBySetBreakdown || report.offensiveSetEfficiency?.setBreakdown || [];
+            if (setData.length > 0) {
+                effHtml += '<p style="font-weight: 700; margin-bottom: 16px; color: var(--orange);">📊 SET-BY-SET BREAKDOWN</p>';
+                setData.forEach(function(s) {
+                    effHtml += '<div class="breakdown-card">';
+                    effHtml += '<div class="breakdown-card-header"><span class="breakdown-card-title">' + (s.setName || s.name) + '</span><span class="breakdown-card-value">' + (s.pointsPerPossession || s.ppp || '--') + ' PPP</span></div>';
+                    effHtml += '<div style="display: flex; gap: 16px; font-size: 0.85rem; color: var(--text-muted);">';
+                    effHtml += '<span>Run ' + (s.timesRun || '--') + 'x</span>';
+                    effHtml += '<span>' + (s.pointsScored || '--') + ' pts</span>';
+                    if (s.percentageOfPossessions) effHtml += '<span>' + s.percentageOfPossessions + '% of poss</span>';
+                    effHtml += '</div>';
+                    if (s.primaryBeneficiary) effHtml += '<p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 8px;">Primary: ' + s.primaryBeneficiary + '</p>';
+                    if (s.bestDefense) effHtml += '<p style="font-size: 0.85rem; color: var(--accent); margin-top: 4px;">🛡️ Counter: ' + s.bestDefense + '</p>';
+                    effHtml += '</div>';
+                });
+            }
+            var bm = report.ballMovementMetrics || report.ballMovementAnalytics;
+            if (bm) {
+                effHtml += '<p style="font-weight: 700; margin-top: 24px; margin-bottom: 16px; color: var(--accent);">🏀 BALL MOVEMENT</p>';
+                if (bm.totalBallReversals) effHtml += '<div class="report-item"><span>Total ball reversals</span><span class="report-item-value">' + bm.totalBallReversals + '</span></div>';
+                if (bm.reversalsPerPossession) effHtml += '<div class="report-item"><span>Reversals per possession</span><span class="report-item-value">' + bm.reversalsPerPossession + '</span></div>';
+                if (bm.passesPerPossession) effHtml += '<div class="report-item"><span>Passes before shot</span><span class="report-item-value">' + bm.passesPerPossession + '</span></div>';
+                if (bm.reversalImpact) effHtml += '<p style="color: var(--warning); margin-top: 12px;">💡 ' + bm.reversalImpact + '</p>';
+            }
+            document.getElementById('efficiency-breakdown').innerHTML = effHtml || '<p style="color: var(--text-muted);">No data</p>';
+
+            // Pace & Turnovers
+            var paceHtml = '';
+            var pa = report.paceAnalysis || report.paceAndTempo;
+            if (pa) {
+                paceHtml += '<p style="font-weight: 700; margin-bottom: 16px; color: var(--orange);">⏱️ PACE & TEMPO</p>';
+                if (pa.possessionsObserved) paceHtml += '<div class="report-item"><span>Possessions observed</span><span class="report-item-value">' + pa.possessionsObserved + '</span></div>';
+                if (pa.estimatedPossessionsPerGame || pa.possessionsPerGameEstimate) paceHtml += '<div class="report-item"><span>Est. possessions/game</span><span class="report-item-value">' + (pa.estimatedPossessionsPerGame || pa.possessionsPerGameEstimate) + '</span></div>';
+                if (pa.paceCategory) paceHtml += '<div class="report-item"><span>Pace category</span><span class="report-item-value">' + pa.paceCategory.toUpperCase() + '</span></div>';
+                if (pa.averagePossessionLength) paceHtml += '<div class="report-item"><span>Avg possession length</span><span class="report-item-value">' + pa.averagePossessionLength + '</span></div>';
+            }
+            var ta = report.turnoverToScoreAnalysis || report.turnoverAnalysis;
+            if (ta) {
+                paceHtml += '<p style="font-weight: 700; margin-top: 24px; margin-bottom: 16px; color: var(--error);">🔄 TURNOVER ANALYSIS</p>';
+                if (ta.turnoversConvertedToScores != null) paceHtml += '<div class="report-item"><span>Turnovers → scores</span><span class="report-item-value">' + ta.turnoversConvertedToScores + '/' + ta.opponentTurnoversObserved + '</span></div>';
+                if (ta.turnoverConversionRate) paceHtml += '<div class="report-item"><span>Conversion rate</span><span class="report-item-value">' + ta.turnoverConversionRate + '%</span></div>';
+                if (ta.keyInsight) paceHtml += '<p style="color: var(--warning); margin-top: 12px; font-weight: 600;">🎯 ' + ta.keyInsight + '</p>';
+            }
+            document.getElementById('pace-breakdown').innerHTML = paceHtml || '<p style="color: var(--text-muted);">No data</p>';
+
+            // Team Value Section
+            var valueHtml = '';
+            if (tv) {
+                if (tv.offensiveIdentity?.whatMakesThemDangerous) {
+                    valueHtml += '<div class="breakdown-card"><div class="breakdown-card-header"><span class="breakdown-card-title">⚡ Offensive Identity</span></div>';
+                    valueHtml += '<p style="color: var(--text-muted);">' + tv.offensiveIdentity.whatMakesThemDangerous + '</p></div>';
+                }
+                if (tv.goToPlays?.needABucket) {
+                    valueHtml += '<p style="font-weight: 700; margin-top: 16px; margin-bottom: 12px; color: var(--orange);">🏀 GO-TO PLAYS</p>';
+                    valueHtml += '<div class="report-item"><span>Need a bucket</span><span style="color: var(--text-muted); font-size: 0.85rem;">' + tv.goToPlays.needABucket + '</span></div>';
+                    if (tv.goToPlays.lastShot) valueHtml += '<div class="report-item"><span>Last shot</span><span style="color: var(--text-muted); font-size: 0.85rem;">' + tv.goToPlays.lastShot + '</span></div>';
+                }
+                if (tv.xFactor?.description) {
+                    valueHtml += '<div style="background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); padding: 16px; border-radius: 10px; margin-top: 16px;">';
+                    valueHtml += '<p style="font-weight: 700; color: #A78BFA; margin-bottom: 8px;">⭐ X-FACTOR</p>';
+                    valueHtml += '<p style="color: var(--text-muted);">' + tv.xFactor.description + '</p></div>';
+                }
+            }
+            document.getElementById('value-breakdown').innerHTML = valueHtml || '<p style="color: var(--text-muted);">No data</p>';
+
+            // Players Section
+            var playerHtml = '';
+            var playerData = report.playerSetAssignments || report.playerSpecificSets || [];
+            if (playerData.length > 0) {
+                playerData.forEach(function(ps) {
+                    playerHtml += '<div class="breakdown-card">';
+                    playerHtml += '<div class="breakdown-card-header"><span class="breakdown-card-title">👤 ' + ps.player + '</span></div>';
+                    if (ps.totalTouches) playerHtml += '<p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;">' + ps.totalTouches + '</p>';
+                    if (ps.mostEffectiveAction) playerHtml += '<p style="font-size: 0.85rem; color: var(--accent);">✓ Best action: ' + ps.mostEffectiveAction + '</p>';
+                    var sets = ps.setsRunForThisPlayer || ps.designedPlays || [];
+                    sets.forEach(function(set) {
+                        playerHtml += '<div class="report-item"><span>' + (set.set || set.setName) + '</span><span class="report-item-value">' + (set.ppp || set.effectiveness || '--') + '</span></div>';
+                    });
+                    playerHtml += '</div>';
+                });
+            } else if (report.keyPlayers?.length > 0) {
+                report.keyPlayers.forEach(function(p) { playerHtml += '<div class="report-item"><span>' + p.identifier + ' (' + p.position + ')</span><span class="report-item-value">' + p.threatLevel + '</span></div>'; });
+            }
+            document.getElementById('players-breakdown').innerHTML = playerHtml || '<p style="color: var(--text-muted);">No data</p>';
+
+            // Practice Plan Section
+            var practiceHtml = '';
+            var drills = report.recommendations?.practiceEmphasis || [];
+            if (drills.length > 0) {
+                drills.forEach(function(drill) {
+                    practiceHtml += '<div class="practice-drill">';
+                    practiceHtml += '<div class="practice-drill-header">';
+                    practiceHtml += '<span class="practice-drill-name">' + drill.drill + '</span>';
+                    if (drill.duration) practiceHtml += '<span class="practice-drill-duration">' + drill.duration + '</span>';
+                    practiceHtml += '</div>';
+                    if (drill.purpose) practiceHtml += '<p class="practice-drill-purpose">' + drill.purpose + '</p>';
+                    if (drill.coachingPoints?.length > 0) {
+                        practiceHtml += '<ul class="practice-drill-points">';
+                        drill.coachingPoints.forEach(function(pt) { practiceHtml += '<li>• ' + pt + '</li>'; });
+                        practiceHtml += '</ul>';
+                    }
+                    if (drill.scoutTeamLook) practiceHtml += '<div class="scout-team-look">🎭 Scout Team: ' + drill.scoutTeamLook + '</div>';
+                    practiceHtml += '</div>';
+                });
+            }
+            document.getElementById('practice-breakdown').innerHTML = practiceHtml || '<p style="color: var(--text-muted);">No practice plan data</p>';
+
+            // Recommendations Section
+            var recHtml = '';
+            if (report.recommendations?.keysToVictory?.length > 0) {
+                recHtml += '<p style="font-weight: 700; margin-bottom: 12px; color: var(--accent);">🔑 KEYS TO VICTORY</p>';
+                report.recommendations.keysToVictory.forEach(function(k, i) { recHtml += '<p style="color: var(--text-muted); padding: 8px 0;">' + (i + 1) + '. ' + k + '</p>'; });
+            }
+            if (report.recommendations?.offensiveGamePlan?.primaryStrategy) {
+                recHtml += '<p style="font-weight: 700; margin-top: 20px; margin-bottom: 8px; color: var(--orange);">⚡ OFFENSIVE STRATEGY</p>';
+                recHtml += '<p style="color: var(--text-muted);">' + report.recommendations.offensiveGamePlan.primaryStrategy + '</p>';
+            }
+            if (report.recommendations?.defensiveGamePlan?.recommendedScheme) {
+                recHtml += '<p style="font-weight: 700; margin-top: 20px; margin-bottom: 8px; color: var(--accent);">🛡️ DEFENSIVE STRATEGY</p>';
+                recHtml += '<p style="color: var(--text-muted);">Recommended: ' + report.recommendations.defensiveGamePlan.recommendedScheme + '</p>';
+            }
+            document.getElementById('recommendations').innerHTML = recHtml || '<p style="color: var(--text-muted);">No recommendations</p>';
+if (report.analysis.outOfBoundsPlays) {
+}
+			
+        }
+
+        window.onbeforeunload = function(e) { 
+            // Clean up polling
+            if (reportPollInterval) { clearInterval(reportPollInterval); reportPollInterval = null; }
+            
+            if (backgroundUpload.active) { 
+                e.preventDefault(); 
+                e.returnValue = 'Upload in progress'; 
+                return e.returnValue; 
+            } 
+        };
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var saved = localStorage.getItem('coachiq_user');
+            if (saved) { currentUser = JSON.parse(saved); updateUserUI(); }
+            var uploadZone = document.getElementById('upload-zone'), fileInput = document.getElementById('file-input');
+            uploadZone.addEventListener('click', function() { fileInput.click(); });
+            uploadZone.addEventListener('dragover', function(e) { e.preventDefault(); uploadZone.classList.add('dragover'); });
+            uploadZone.addEventListener('dragleave', function() { uploadZone.classList.remove('dragover'); });
+            uploadZone.addEventListener('drop', function(e) { e.preventDefault(); uploadZone.classList.remove('dragover'); if (e.dataTransfer.files[0]) handleVideoFile(e.dataTransfer.files[0]); });
+            fileInput.addEventListener('change', function(e) { if (e.target.files[0]) handleVideoFile(e.target.files[0]); });
+        });
+    </script>
+
+
+
+</body>
+</html>
