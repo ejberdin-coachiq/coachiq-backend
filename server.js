@@ -779,6 +779,54 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     "mostValuableAspect": "SINGLE MOST IMPORTANT THING - What you MUST stop to beat them"
   },
 
+  // ============================================
+  // NEW FEATURES: Shot Chart, Starting 5, OOB, Primary Handler
+  // ============================================
+  "shotChartAnalysis": {
+    "shots": [],
+    "zoneStatistics": {
+      "paint": { "attempts": 0, "made": 0, "percentage": 0 },
+      "leftCorner": { "attempts": 0, "made": 0, "percentage": 0 },
+      "rightCorner": { "attempts": 0, "made": 0, "percentage": 0 },
+      "leftWing": { "attempts": 0, "made": 0, "percentage": 0 },
+      "rightWing": { "attempts": 0, "made": 0, "percentage": 0 },
+      "topOfKey": { "attempts": 0, "made": 0, "percentage": 0 }
+    },
+    "hotZones": [],
+    "coldZones": [],
+    "preferredShootingAreas": ""
+  },
+
+  "startingFiveAnalysis": {
+    "players": []
+  },
+
+  "outOfBoundsPlays": {
+    "baselineOutOfBounds": {
+      "frequency": "",
+      "commonSets": [],
+      "tendencies": ""
+    },
+    "sidelineOutOfBounds": {
+      "frequency": "",
+      "commonSets": [],
+      "tendencies": ""
+    }
+  },
+
+  "primaryBallHandler": {
+    "identification": {
+      "jerseyNumber": "",
+      "name": "",
+      "possessionPercentage": 0
+    },
+    "ballHandlingTendencies": {},
+    "offensiveInitiation": {},
+    "impactOnTeam": {},
+    "defensiveStrategy": {}
+  },
+
+
   "offensiveSetTracking": {
     "totalPossessionsObserved": 45,
     "setBySetBreakdown": [
@@ -1171,7 +1219,74 @@ Remember:
 - Identify the specific scheme names from the reference list
 - Consider the skill level when evaluating execution
 - Only report what you can actually observe
-- Provide actionable recommendations for any coaching level`;
+- Provide actionable recommendations for any coaching level
+---
+
+## 🎯 REQUIRED: SHOT CHART ANALYSIS
+
+Track EVERY shot attempt. For each shot:
+- X: 0-47 feet from left sideline
+- Y: 0-47 feet from baseline
+- Made/missed
+- Shot type (layup, dunk, mid-range, 3pt)
+- Zone (paint, left corner, right corner, left wing, right wing, top of key)
+- Shooter jersey number
+
+Calculate shooting percentages for each zone.
+Identify hot zones (>40% shooting) and cold zones (<30% shooting).
+
+---
+
+## 👥 REQUIRED: STARTING FIVE ANALYSIS
+
+Identify the 5 players who play most or start. For EACH player provide:
+- Jersey number (MUST be visible)
+- Position/role
+- Height (estimated)
+- Exactly 3 SPECIFIC strengths (not generic)
+- Exactly 3 EXPLOITABLE weaknesses
+- Detailed "How to guard" instructions with specific tactics
+- Observable tendencies
+- Impact ratings (High/Medium/Low for offense and defense)
+
+Be SPECIFIC not generic. Say "Elite 3PT shooter at 45% from corners" not just "good shooter".
+
+---
+
+## 📋 REQUIRED: OUT OF BOUNDS PLAYS
+
+### BLOB (Baseline Out of Bounds):
+- Count how many times observed
+- Identify 2-3 common sets
+- For each set: name, formation, key actions, success rate, how to defend
+
+### SLOB (Sideline Out of Bounds):
+- Same detailed analysis
+
+Be SPECIFIC - coaches will practice defending these exact plays.
+
+---
+
+## 🎯 REQUIRED: PRIMARY BALL HANDLER
+
+Identify who handles the ball most:
+- Jersey number
+- Percentage of possessions they handle
+- Ball-handling tendencies (right vs left hand, speed, decision making)
+- How the offense is initiated
+- What their favorite plays/actions are
+- What happens when they have the ball vs when they don't
+- SPECIFIC defensive strategy to disrupt them
+- Who should guard them
+- Why they are critical to stopping
+
+If one player dominates ball handling, emphasize this is KEY defensive focus.
+
+---
+
+REMINDER: ALL of these new sections (shotChartAnalysis, startingFiveAnalysis, outOfBoundsPlays, primaryBallHandler) are REQUIRED in your JSON response.
+
+`;
 }
 
 // ===========================================
@@ -1654,5 +1769,3 @@ app.listen(PORT, () => {
     console.log(`🛡️ All defensive schemes: 40+ variations`);
     console.log(`⚡ All offensive sets: 60+ actions and plays`);
 });
-
-  // Force redeploy 2026-02-03
