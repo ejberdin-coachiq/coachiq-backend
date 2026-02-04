@@ -1220,6 +1220,7 @@ Remember:
 - Consider the skill level when evaluating execution
 - Only report what you can actually observe
 - Provide actionable recommendations for any coaching level
+
 ---
 
 ## 🎯 REQUIRED: SHOT CHART ANALYSIS
