@@ -400,9 +400,10 @@ function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo
 **IMPORTANT INSTRUCTIONS:**
 - When analyzing OFFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's offensive sets, plays, and tendencies
 - When analyzing DEFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's defensive schemes and coverages
-- ONLY report on the team wearing **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** jerseys
-- In each frame, first identify which team has the ball by jersey color
-- Clearly label all observations with the jersey color for verification
+- Analyze BOTH teams in the video, but focus your final report on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team
+- Track both teams' actions to understand the full game context
+- When reporting, provide analysis specifically about the ${teamInfo.opponent.jerseyColor?.toUpperCase() || 'opponent'} team's offense and defense
+- Use the other team's actions as context to understand what the opponent is doing
 
 ---
 `;
@@ -410,7 +411,7 @@ function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo
         teamIdentification = `
 ## ⚠️ TEAM IDENTIFICATION
 
-No specific jersey colors were provided. Try to consistently identify one team to analyze throughout all frames. Look for consistent jersey colors/uniforms and focus your scouting report on ONE team's offense and defense.
+No specific jersey colors were provided. Analyze BOTH teams in the video. Identify the two teams by their jersey colors, then provide comprehensive analysis of the team that appears to be the visiting/opponent team (typically the team that seems less familiar or has darker jerseys). Provide context about both teams but focus the final report on one consistent team.
 
 ---
 `;
@@ -1518,7 +1519,7 @@ async function extractFrames(videoPath, outputDir) {
         fs.mkdirSync(framesDir, { recursive: true });
 
         ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/3,scale=800:-1', '-frames:v', '60', '-q:v', '4'])
+            .outputOptions(['-vf', 'fps=1/5,scale=800:-1', '-frames:v', '24', '-q:v', '4'])
             .output(path.join(framesDir, 'frame_%03d.jpg'))
             .on('end', () => {
                 const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
