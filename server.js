@@ -426,49 +426,6 @@ No specific jersey colors were provided. Try to consistently identify one team t
 ${teamIdentification}
 ## INSTRUCTIONS
 
-
-
-## ⚠️ MANDATORY ANALYSIS REQUIREMENTS
-
-**YOU MUST PROVIDE COMPLETE ANALYSIS REGARDLESS OF FOOTAGE QUALITY.**
-
-**ABSOLUTELY PROHIBITED RESPONSES:**
-- ❌ "Cannot determine"
-- ❌ "Unable to assess"
-- ❌ "Warmup footage"
-- ❌ "Insufficient information"
-- ❌ "Not enough data"
-- ❌ "N/A"
-
-**REQUIRED BEHAVIOR:**
-✅ Even if you only see 5 seconds of action, analyze what you see
-✅ Make educated guesses based on player positioning
-✅ Infer schemes from partial information
-✅ Provide probabilistic assessments ("likely", "appears to", "suggests")
-✅ Default to common schemes if unsure (man-to-man defense, 5-out offense)
-✅ Use phrases like "Based on limited footage..." then PROVIDE AN ANSWER
-✅ Assume this IS a game unless 100% certain it's a drill
-
-**MINIMUM REQUIREMENTS FOR EVERY REPORT:**
-- Defense: MUST identify at least one defensive scheme (man-to-man, 2-3 zone, etc.)
-- Pace: MUST provide a rating (50-80 range if unsure)
-- Possessions: MUST estimate based on what you see
-- Primary Weapon: MUST identify something (even if it's "perimeter shooting" or "driving")
-
-**EXAMPLE CORRECT RESPONSES:**
-✅ "Based on limited footage, appears to be running man-to-man defense"
-✅ "Pace appears moderate, estimated 65"
-✅ "Primary offensive action seems to be ball screen with roll"
-
-**FRAMEWORK FOR UNCLEAR FOOTAGE:**
-If footage is unclear, use this framework:
-1. State what you CAN see
-2. Make reasonable inferences
-3. Provide your best professional assessment
-4. Note confidence level if needed
-
-
-
 Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
 
 **Remember: ONLY analyze the team wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} jerseys.**
@@ -1561,7 +1518,7 @@ async function extractFrames(videoPath, outputDir) {
         fs.mkdirSync(framesDir, { recursive: true });
 
         ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/5,scale=800:-1', '-frames:v', '24', '-q:v', '4'])
+            .outputOptions(['-vf', 'fps=1/3,scale=800:-1', '-frames:v', '60', '-q:v', '4'])
             .output(path.join(framesDir, 'frame_%03d.jpg'))
             .on('end', () => {
                 const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
