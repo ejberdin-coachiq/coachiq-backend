@@ -386,24 +386,27 @@ IMPORTANT RULES:
 function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo = null) {
     // Build team identification section if teamInfo is provided
     let teamIdentification = '';
-    if (teamInfo && teamInfo.opponent && teamInfo.yourTeam) {
+    const opponentColor = teamInfo?.opponent?.jerseyColor?.toUpperCase() || null;
+    const yourTeamColor = teamInfo?.yourTeam?.jerseyColor?.toUpperCase() || null;
+
+    if (teamInfo && teamInfo.opponent && teamInfo.yourTeam && opponentColor) {
         teamIdentification = `
 ## 🎽 CRITICAL: TEAM IDENTIFICATION
 
-**You MUST distinguish between the two teams using jersey colors:**
+**You MUST distinguish between the two teams by their uniform/jersey colors.**
 
-| Team | Jersey Color | Role |
-|------|--------------|------|
-| **${teamInfo.opponent.name || opponentName}** | **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | ⚠️ **SCOUT THIS TEAM** - All analysis should focus on this team |
-| **${teamInfo.yourTeam.name || 'Opposing Team'}** | **${teamInfo.yourTeam.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | Ignore this team except to note how opponent defends them |
+Note: Basketball courts are typically light-colored hardwood with white boundary lines. Do NOT confuse court markings or the court surface with jersey colors. Focus on the PLAYERS' UNIFORMS to identify teams.
 
-**IMPORTANT INSTRUCTIONS:**
-- When analyzing OFFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's offensive sets, plays, and tendencies
-- When analyzing DEFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's defensive schemes and coverages
-- Analyze BOTH teams in the video, but focus your final report on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team
-- Track both teams' actions to understand the full game context
-- When reporting, provide analysis specifically about the ${teamInfo.opponent.jerseyColor?.toUpperCase() || 'opponent'} team's offense and defense
-- Use the other team's actions as context to understand what the opponent is doing
+| Team | Uniform Color | Role |
+|------|---------------|------|
+| **${teamInfo.opponent.name || opponentName}** | **${opponentColor}** uniforms/jerseys | ⚠️ **SCOUT THIS TEAM** - All analysis focuses here |
+| **${teamInfo.yourTeam.name || 'Your Team'}** | **${yourTeamColor || 'UNKNOWN'}** uniforms/jerseys | Context only - note how they are affected by the opponent |
+
+**INSTRUCTIONS:**
+- Focus ALL analysis (offense AND defense) on the players wearing **${opponentColor}**-colored uniforms
+- Identify ${opponentColor}-uniformed players by their jersey numbers and positions on the court
+- Use the ${yourTeamColor || 'other'}-uniformed team only as context to understand what the ${opponentColor} team is doing
+- If ${opponentColor} uniforms are hard to distinguish from the court or background, look for jersey numbers, shorts color, and shoe colors to track those players
 
 ---
 `;
@@ -411,7 +414,7 @@ function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo
         teamIdentification = `
 ## ⚠️ TEAM IDENTIFICATION
 
-No specific jersey colors were provided. Analyze BOTH teams in the video. Identify the two teams by their jersey colors, then provide comprehensive analysis of the team that appears to be the visiting/opponent team (typically the team that seems less familiar or has darker jerseys). Provide context about both teams but focus the final report on one consistent team.
+No specific jersey colors were provided. Identify the two teams by their uniform colors, then provide comprehensive analysis of the team that appears to be the visiting/opponent team. Look at jersey colors, shorts, and shoes to distinguish the two teams. Provide context about both teams but focus the final report on one consistent team.
 
 ---
 `;
@@ -427,9 +430,9 @@ No specific jersey colors were provided. Analyze BOTH teams in the video. Identi
 ${teamIdentification}
 ## INSTRUCTIONS
 
-Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
+Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Identify players on this team by their uniform color, jersey numbers, and positions on the court. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
 
-**Remember: ONLY analyze the team wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} jerseys.**
+**Remember: Focus your analysis on the players wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} uniforms/jerseys. Do not confuse court markings or the light-colored court surface with uniform colors.**
 
 Use the comprehensive basketball knowledge provided to identify specific schemes, sets, and actions.
 
@@ -437,7 +440,7 @@ Use the comprehensive basketball knowledge provided to identify specific schemes
 
 ## DEFENSIVE IDENTIFICATION CHECKLIST
 
-**Analyze the ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'OPPONENT'} jersey team's defense:**
+**Analyze the ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'OPPONENT'}-uniformed team's defense:**
 
 Look for and identify:
 
@@ -1504,7 +1507,7 @@ function getVideoInfo(videoPath) {
 function compressVideo(inputPath, outputPath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputPath)
-            .outputOptions(['-c:v libx264', '-preset fast', '-crf 28', '-vf scale=854:-2', '-t 600', '-an', '-y'])
+            .outputOptions(['-c:v libx264', '-preset fast', '-crf 23', '-vf scale=854:-2', '-t 600', '-an', '-y'])
             .output(outputPath)
             .on('end', () => resolve(outputPath))
             .on('error', reject)
@@ -1519,7 +1522,7 @@ async function extractFrames(videoPath, outputDir) {
         fs.mkdirSync(framesDir, { recursive: true });
 
         ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/5,scale=800:-1', '-frames:v', '24', '-q:v', '4'])
+            .outputOptions(['-vf', 'fps=1/5,scale=800:-2', '-frames:v', '24', '-q:v', '2'])
             .output(path.join(framesDir, 'frame_%03d.jpg'))
             .on('end', () => {
                 const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
