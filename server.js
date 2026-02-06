@@ -1406,7 +1406,7 @@ async function processVideoFile(reportId, videoPath, opponentName, analysisOptio
         }
         
         updateReport(reportId, { progress: 30, progressText: 'Extracting frames...' });
-        const frames = await extractFrames(processedPath, tempDir);
+        const frames = await extractFrames(processedPath, tempDir, videoInfo?.duration);
         
         // Log team info for debugging
         if (teamInfo) {
@@ -1454,7 +1454,7 @@ async function analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo
     
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 8192,
+        max_tokens: 16384,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageContent] }]
     });
@@ -1507,7 +1507,7 @@ function getVideoInfo(videoPath) {
 function compressVideo(inputPath, outputPath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputPath)
-            .outputOptions(['-c:v libx264', '-preset fast', '-crf 23', '-vf scale=854:-2', '-t 600', '-an', '-y'])
+            .outputOptions(['-c:v libx264', '-preset fast', '-crf 23', '-vf scale=854:-2', '-an', '-y'])
             .output(outputPath)
             .on('end', () => resolve(outputPath))
             .on('error', reject)
@@ -1515,14 +1515,25 @@ function compressVideo(inputPath, outputPath) {
     });
 }
 
-async function extractFrames(videoPath, outputDir) {
+async function extractFrames(videoPath, outputDir, videoDuration = null) {
     return new Promise((resolve, reject) => {
         const frames = [];
         const framesDir = path.join(outputDir, 'frames');
         fs.mkdirSync(framesDir, { recursive: true });
 
+        // Dynamically calculate frame interval to cover the ENTIRE video
+        const MAX_FRAMES = 60;
+        const MIN_INTERVAL = 3; // seconds - minimum gap between frames
+        const duration = videoDuration ? parseFloat(videoDuration) : 120;
+
+        // Calculate interval so frames span the full video
+        const interval = Math.max(MIN_INTERVAL, Math.ceil(duration / MAX_FRAMES));
+        const maxFrames = Math.min(MAX_FRAMES, Math.ceil(duration / interval));
+
+        console.log(`🎬 Frame extraction: ${Math.round(duration)}s video → 1 frame every ${interval}s, max ${maxFrames} frames`);
+
         ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/5,scale=800:-2', '-frames:v', '24', '-q:v', '2'])
+            .outputOptions(['-vf', `fps=1/${interval},scale=800:-2`, '-frames:v', `${maxFrames}`, '-q:v', '2'])
             .output(path.join(framesDir, 'frame_%03d.jpg'))
             .on('end', () => {
                 const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
