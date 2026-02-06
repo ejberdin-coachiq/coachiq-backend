@@ -580,6 +580,43 @@ For EACH set you identify, track:
 - [ ] What is the X-FACTOR that wins them games?
 - [ ] What MUST you stop to beat this team?
 
+### Shot Chart Analysis
+For EVERY shot attempt observed, track:
+- [ ] Where on the court was the shot taken? (estimate x,y coordinates on a 50x47 court, origin at bottom-left)
+- [ ] Was it made or missed?
+- [ ] What type of shot? (layup, mid-range, three-pointer, floater, dunk, free throw)
+- [ ] Who took the shot? (jersey number if visible)
+- [ ] Identify HOT ZONES (areas shooting above 45%)
+- [ ] Identify COLD ZONES (areas shooting below 30%)
+- [ ] Calculate shooting percentage by area: paint, mid-range left, mid-range right, left corner 3, right corner 3, wing 3 left, wing 3 right, top of key 3
+
+### Starting Five / Key Player Analysis
+Identify the 5 most important players (starting five or top rotation):
+- [ ] Jersey number and position for each
+- [ ] Offensive strengths (at least 2-3 per player)
+- [ ] Offensive weaknesses (at least 1-2 per player)
+- [ ] Defensive strengths and weaknesses
+- [ ] How to guard each player specifically (scouting advice)
+- [ ] Physical profile and athleticism notes
+
+### Out of Bounds Play Analysis
+Track ALL out of bounds situations:
+- [ ] BLOB (Baseline Out of Bounds): How many observed? What sets do they run? Who is the inbounder? Primary scoring option?
+- [ ] SLOB (Sideline Out of Bounds): How many observed? What sets do they run? Who is the inbounder? Primary scoring option?
+- [ ] Do they score frequently off OOB plays?
+- [ ] How to defend their BLOB plays specifically
+- [ ] How to defend their SLOB plays specifically
+
+### Primary Ball Handler Analysis
+Identify the player who handles the ball the most:
+- [ ] Jersey number and name/description
+- [ ] What percentage of possessions does this player have the ball?
+- [ ] Dominant hand and preferred direction
+- [ ] Ball handling tendencies (crossover, between legs, hesitation, etc.)
+- [ ] Decision-making in pick and roll (pass, drive, pull-up)
+- [ ] Turnover tendencies (when/where do they turn it over)
+- [ ] Best defensive strategy to contain this player
+
 ### Set Frequency & Scoring (TRACK EVERY SET)
 For each offensive set identified, count:
 - [ ] How many times was this EXACT set run?
@@ -1035,8 +1072,24 @@ Provide your analysis in this JSON structure. Be thorough and specific:
       "effectiveness": "How well they attack zones"
     },
     "outOfBounds": {
-      "blob": "Baseline out of bounds tendencies",
-      "slob": "Sideline out of bounds tendencies"
+      "blob": {
+        "observed": true,
+        "frequency": 5,
+        "commonSets": ["Stack", "Box", "Line"],
+        "inbounder": "#5 - Point Guard",
+        "primaryOption": "#23 on curl to basket",
+        "scoringRate": "Scored on 3 of 5 attempts",
+        "howToDefend": "Switch on all screens, deny inbound to strong side"
+      },
+      "slob": {
+        "observed": true,
+        "frequency": 3,
+        "commonSets": ["Zipper", "Floppy"],
+        "inbounder": "#11 - Shooting Guard",
+        "primaryOption": "#23 off stagger screen",
+        "scoringRate": "Scored on 1 of 3 attempts",
+        "howToDefend": "Deny the first pass, force long inbound"
+      }
     },
     "weaknesses": [
       {
@@ -1047,12 +1100,14 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     "strengths": ["Offensive strength 1", "Offensive strength 2"]
   },
 
-  "keyPlayers": [
+  "startingFive": [
     {
-      "identifier": "Jersey # or description",
+      "jerseyNumber": "#23",
       "position": "PG | SG | SF | PF | C",
       "role": "primary_ball_handler | scorer | screener | shooter | rim_protector | glue_guy",
       "usage": "Estimated % of offense involvement",
+      "strengths": ["Quick first step", "Excellent court vision", "Consistent 3-point shooter"],
+      "weaknesses": ["Weak left hand", "Struggles against physical defense"],
       "offensiveTendencies": {
         "preferredHand": "right | left | both",
         "favoriteSpots": ["Locations on floor"],
@@ -1069,7 +1124,36 @@ Provide your analysis in this JSON structure. Be thorough and specific:
       },
       "physicalProfile": "Size/athleticism observations",
       "threatLevel": "high | medium | low",
-      "keyMatchup": "Who should guard them",
+      "howToGuard": "Force left, deny catch on right wing, go over screens, no help needed on drives left",
+      "notes": "Additional observations"
+    }
+  ],
+
+  "keyPlayers": [
+    {
+      "identifier": "Jersey # or description",
+      "position": "PG | SG | SF | PF | C",
+      "role": "primary_ball_handler | scorer | screener | shooter | rim_protector | glue_guy",
+      "usage": "Estimated % of offense involvement",
+      "strengths": ["Strength 1", "Strength 2"],
+      "weaknesses": ["Weakness 1", "Weakness 2"],
+      "offensiveTendencies": {
+        "preferredHand": "right | left | both",
+        "favoriteSpots": ["Locations on floor"],
+        "goToMoves": ["Signature moves"],
+        "shootingAbility": "Shooting assessment",
+        "ballHandling": "Ball handling assessment",
+        "postGame": "Post game if applicable",
+        "offBall": "Off-ball movement quality"
+      },
+      "defensiveTendencies": {
+        "onBall": "On-ball defense quality",
+        "help": "Help defense quality",
+        "rebounding": "Rebounding effort"
+      },
+      "physicalProfile": "Size/athleticism observations",
+      "threatLevel": "high | medium | low",
+      "howToGuard": "Specific defensive strategy for this player",
       "notes": "Additional observations"
     }
   ],
@@ -1090,6 +1174,66 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     "endOfGame": "EOG situation tendencies",
     "pressBreak": "How they break pressure",
     "foulSituations": "Foul game tendencies"
+  },
+
+  "shotChart": {
+    "shots": [
+      {
+        "player": "#23",
+        "x": 25,
+        "y": 32,
+        "made": true,
+        "shotType": "three_pointer | mid_range | layup | floater | dunk | free_throw",
+        "area": "paint | mid_left | mid_right | left_corner_3 | right_corner_3 | left_wing_3 | right_wing_3 | top_key_3"
+      }
+    ],
+    "totalShots": 45,
+    "totalMade": 22,
+    "overallPercentage": 48.9,
+    "byArea": {
+      "paint": { "attempts": 15, "made": 10, "percentage": 66.7 },
+      "midRange": { "attempts": 8, "made": 3, "percentage": 37.5 },
+      "leftCorner3": { "attempts": 4, "made": 2, "percentage": 50.0 },
+      "rightCorner3": { "attempts": 5, "made": 3, "percentage": 60.0 },
+      "leftWing3": { "attempts": 5, "made": 2, "percentage": 40.0 },
+      "rightWing3": { "attempts": 4, "made": 1, "percentage": 25.0 },
+      "topKey3": { "attempts": 4, "made": 1, "percentage": 25.0 }
+    },
+    "hotZones": [
+      { "area": "paint", "percentage": 66.7, "description": "Dominant inside scoring" },
+      { "area": "right_corner_3", "percentage": 60.0, "description": "Corner specialist" }
+    ],
+    "coldZones": [
+      { "area": "right_wing_3", "percentage": 25.0, "description": "Avoid forcing shots here" }
+    ]
+  },
+
+  "primaryBallHandler": {
+    "jerseyNumber": "#23",
+    "description": "Point Guard, team captain",
+    "possessionPercentage": 68,
+    "dominantHand": "right",
+    "preferredDirection": "right",
+    "ballHandlingMoves": ["crossover", "between_legs", "hesitation", "step_back"],
+    "tendencies": {
+      "pickAndRoll": "Attacks right side, reads roller vs pop, prefers pocket pass",
+      "isolation": "Step-back three from right wing, drives left reluctantly",
+      "transition": "Pushes pace aggressively, looks for outlet ahead first",
+      "halfCourt": "Calls sets, uses DHO with wing players, patient"
+    },
+    "decisionMaking": {
+      "passFirst": false,
+      "turnoverProne": "Under pressure from traps and aggressive hedges",
+      "assistRate": "Estimated 6-8 assists per game",
+      "readQuality": "Good reads off PnR, struggles vs switching defenses"
+    },
+    "defensiveStrategy": {
+      "primary": "Force left - he is significantly weaker going left",
+      "onScreens": "ICE ball screens to keep him on his weak hand",
+      "inTransition": "Get back and set up, don't let him push pace",
+      "pressure": "Full court pressure causes turnovers, pick him up early",
+      "trapping": "Trap on strong side ball screens, rotate weak side"
+    }
   },
 
   "teamStrengths": [
@@ -1574,7 +1718,29 @@ function generateReport(analysis, opponentName, frameCount, videoInfo, teamInfo 
         defense: analysis?.defense || { primary: { scheme: 'Unknown' } },
         offense: analysis?.offense || { primary: { system: 'Unknown' } },
         keyPlayers: analysis?.keyPlayers || [],
+        startingFive: analysis?.startingFive || [],
         pace: analysis?.pace || { rating: 50 },
+
+        // Shot Chart
+        shotChart: analysis?.shotChart || {
+            shots: [],
+            totalShots: null,
+            totalMade: null,
+            overallPercentage: null,
+            byArea: {},
+            hotZones: [],
+            coldZones: []
+        },
+
+        // Primary Ball Handler
+        primaryBallHandler: analysis?.primaryBallHandler || {
+            jerseyNumber: null,
+            description: null,
+            possessionPercentage: null,
+            dominantHand: null,
+            tendencies: {},
+            defensiveStrategy: {}
+        },
         
         // Enhanced Analytics
         paceAndTempo: analysis?.paceAndTempo || {
