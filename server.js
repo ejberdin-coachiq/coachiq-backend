@@ -1519,7 +1519,7 @@ async function extractFrames(videoPath, outputDir) {
         fs.mkdirSync(framesDir, { recursive: true });
 
         ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/5,scale=800:-1', '-frames:v', '24', '-q:v', '4'])
+            .outputOptions(['-vf', 'fps=1/3,scale=800:-1', '-frames:v', '60', '-q:v', '4'])
             .output(path.join(framesDir, 'frame_%03d.jpg'))
             .on('end', () => {
                 const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
