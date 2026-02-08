@@ -12,8 +12,36 @@ const multer = require('multer');
 const { Resend } = require('resend');
 const { validateImage, compressImage, extractJSON } = require('./utils/imageProcessing');
 
+// ===========================================
+// ENVIRONMENT VALIDATION
+// ===========================================
+
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const PORT = process.env.PORT || 3000;
+const FRONTEND_URL = process.env.FRONTEND_URL || '*';
+
+if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('===========================================');
+    console.error('FATAL: ANTHROPIC_API_KEY is not set.');
+    console.error('');
+    console.error('The server cannot start without this key.');
+    console.error('');
+    console.error('To fix this:');
+    console.error('  Local:   export ANTHROPIC_API_KEY=your-key-here');
+    console.error('  Railway: Add ANTHROPIC_API_KEY in your service Variables tab');
+    console.error('           (Settings → Variables → New Variable)');
+    console.error('===========================================');
+    process.exit(1);
+}
+
 const app = express();
-app.use(cors());
+
+// Configure CORS with FRONTEND_URL
+app.use(cors({
+    origin: FRONTEND_URL === '*' ? '*' : FRONTEND_URL.split(',').map(u => u.trim()),
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '100mb' }));
 
 // Configure multer
@@ -1831,10 +1859,24 @@ Be specific, actionable, and reference the actual numbers from the game stats.`;
     }
 });
 
-const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`🏀 CoachIQ v6.0 COMPREHENSIVE running on port ${PORT}`);
-    console.log(`📊 All skill levels: Youth → Middle School → High School → College → Pro`);
-    console.log(`🛡️ All defensive schemes: 40+ variations`);
-    console.log(`⚡ All offensive sets: 60+ actions and plays`);
+    console.log('===========================================');
+    console.log(`CoachIQ v6.0 COMPREHENSIVE`);
+    console.log(`Environment: ${NODE_ENV}`);
+    console.log(`Port:        ${PORT}`);
+    console.log(`CORS origin: ${FRONTEND_URL}`);
+    console.log('-------------------------------------------');
+    console.log('API Endpoints:');
+    console.log('  GET  /                          Status');
+    console.log('  GET  /health                    Health check');
+    console.log('  POST /api/users/register        Register user');
+    console.log('  GET  /api/users/:email          Get user');
+    console.log('  GET  /api/users/:email/reports  Get user reports');
+    console.log('  GET  /api/reports/:id            Get report');
+    console.log('  POST /api/upload/init           Init upload');
+    console.log('  POST /api/upload/chunk          Upload chunk');
+    console.log('  POST /api/upload/finalize       Finalize upload');
+    console.log('  POST /api/upload/simple         Simple upload');
+    console.log('  POST /api/analyze-scorebook     Scorebook analysis');
+    console.log('===========================================');
 });
