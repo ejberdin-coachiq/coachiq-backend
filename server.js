@@ -10,6 +10,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const { Resend } = require('resend');
+const { validateImage, compressImage, extractJSON } = require('./utils/imageProcessing');
 
 const app = express();
 app.use(cors());
@@ -1658,13 +1659,6 @@ app.post('/api/analyze-scorebook', async (req, res) => {
         const { image, team } = req.body;
 
         // Validate required fields
-        if (!image || typeof image !== 'string') {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing or invalid "image" field. Must be a base64 encoded string.'
-            });
-        }
-
         if (!team || !['home', 'away'].includes(team)) {
             return res.status(400).json({
                 success: false,
@@ -1672,14 +1666,27 @@ app.post('/api/analyze-scorebook', async (req, res) => {
             });
         }
 
-        // Strip data URI prefix if present
-        const base64Data = image.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+        // Validate the image using utility function
+        const validation = validateImage(image);
+        if (!validation.valid) {
+            return res.status(400).json({
+                success: false,
+                error: validation.error
+            });
+        }
 
-        // Detect media type from data URI or default to jpeg
-        let mediaType = 'image/jpeg';
-        const dataUriMatch = image.match(/^data:(image\/[a-zA-Z]+);base64,/);
-        if (dataUriMatch) {
-            mediaType = dataUriMatch[1];
+        // Compress image if needed (>5MB → ~2MB) and convert HEIC to JPEG
+        let { base64Data, mediaType } = validation;
+        try {
+            const compressed = await compressImage(image, 2);
+            base64Data = compressed.base64Data;
+            mediaType = compressed.mediaType;
+            if (compressed.compressed) {
+                console.log(`Image compressed: ${compressed.originalSizeMB}MB → ${compressed.finalSizeMB}MB`);
+            }
+        } catch (compressError) {
+            console.error('Image compression error:', compressError.message);
+            // Fall through with original validated data if compression fails
         }
 
         // Step 1: Extract stats from scorebook image
@@ -1747,13 +1754,10 @@ Important:
             });
         }
 
-        // Parse the extracted stats
+        // Parse the extracted stats using utility function
         let stats;
         try {
-            const rawText = statsResponse.content[0].text.trim();
-            // Handle potential markdown code block wrapping
-            const jsonText = rawText.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
-            stats = JSON.parse(jsonText);
+            stats = extractJSON(statsResponse.content[0].text);
         } catch (parseError) {
             console.error('JSON parse error (stats):', parseError.message);
             console.error('Raw response:', statsResponse.content[0].text);
