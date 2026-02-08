@@ -1680,7 +1680,31 @@ function cleanup(dir) {
 // SCOREBOOK ANALYSIS ENDPOINT
 // ===========================================
 
-app.post('/api/analyze-scorebook', async (req, res) => {
+function scorebookLogger(req, res, next) {
+    const startTime = Date.now();
+    const { image, team } = req.body || {};
+    const imageSizeKB = image && typeof image === 'string'
+        ? (Buffer.byteLength(image, 'utf8') / 1024).toFixed(1)
+        : '0';
+
+    console.log(`[SCOREBOOK] ${new Date().toISOString()} | POST /api/analyze-scorebook | team=${team || 'N/A'} | imageSize=${imageSizeKB}KB`);
+
+    // Intercept res.json to log response details
+    const originalJson = res.json.bind(res);
+    res.json = (body) => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        if (body && body.success) {
+            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=success`);
+        } else {
+            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=failed | error=${body?.error || 'unknown'}`);
+        }
+        return originalJson(body);
+    };
+
+    next();
+}
+
+app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
     const startTime = Date.now();
 
     try {
