@@ -1182,7 +1182,7 @@ app.get('/', (req, res) => {
     res.json({ 
         status: 'CoachIQ API running', 
         version: '6.0.0-comprehensive',
-        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis']
+        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis', 'scorebook-analysis']
     });
 });
 
@@ -1646,6 +1646,186 @@ function generateReport(analysis, opponentName, frameCount, videoInfo, teamInfo 
 function cleanup(dir) {
     try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
 }
+
+// ===========================================
+// SCOREBOOK ANALYSIS ENDPOINT
+// ===========================================
+
+app.post('/api/analyze-scorebook', async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { image, team } = req.body;
+
+        // Validate required fields
+        if (!image || typeof image !== 'string') {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing or invalid "image" field. Must be a base64 encoded string.'
+            });
+        }
+
+        if (!team || !['home', 'away'].includes(team)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing or invalid "team" field. Must be "home" or "away".'
+            });
+        }
+
+        // Strip data URI prefix if present
+        const base64Data = image.replace(/^data:image\/[a-zA-Z]+;base64,/, '');
+
+        // Detect media type from data URI or default to jpeg
+        let mediaType = 'image/jpeg';
+        const dataUriMatch = image.match(/^data:(image\/[a-zA-Z]+);base64,/);
+        if (dataUriMatch) {
+            mediaType = dataUriMatch[1];
+        }
+
+        // Step 1: Extract stats from scorebook image
+        const extractionPrompt = `You are analyzing a basketball scorebook photo for the ${team} team.
+
+Extract the basketball statistics from this scorebook image and return ONLY valid JSON in this exact format (no markdown, no explanation, just the JSON object):
+{
+  "quarters": {"Q1": <number>, "Q2": <number>, "Q3": <number>, "Q4": <number>},
+  "finalScore": <number>,
+  "players": [
+    {
+      "number": "<jersey number as string>",
+      "name": "<player name>",
+      "points": <number>,
+      "fieldGoalsMade": <number>,
+      "fieldGoalsAttempted": <number>,
+      "freeThrowsMade": <number>,
+      "freeThrowsAttempted": <number>,
+      "fouls": <number>
+    }
+  ],
+  "teamTotals": {
+    "totalPoints": <number>,
+    "fieldGoalPercentage": <number>,
+    "freeThrowPercentage": <number>
+  }
+}
+
+Important:
+- Focus on the ${team} team's data
+- If a value cannot be determined from the scorebook, use 0
+- Calculate fieldGoalPercentage and freeThrowPercentage as decimal values (e.g. 0.45 for 45%)
+- Include all players visible in the scorebook
+- Return ONLY the JSON object, nothing else`;
+
+        let statsResponse;
+        try {
+            statsResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-5-20250929',
+                max_tokens: 4096,
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: mediaType,
+                                data: base64Data
+                            }
+                        },
+                        {
+                            type: 'text',
+                            text: extractionPrompt
+                        }
+                    ]
+                }]
+            });
+        } catch (apiError) {
+            console.error('Claude API error (stats extraction):', apiError.message);
+            return res.status(502).json({
+                success: false,
+                error: 'Failed to analyze scorebook image. Claude API error.',
+                details: apiError.message
+            });
+        }
+
+        // Parse the extracted stats
+        let stats;
+        try {
+            const rawText = statsResponse.content[0].text.trim();
+            // Handle potential markdown code block wrapping
+            const jsonText = rawText.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+            stats = JSON.parse(jsonText);
+        } catch (parseError) {
+            console.error('JSON parse error (stats):', parseError.message);
+            console.error('Raw response:', statsResponse.content[0].text);
+            return res.status(422).json({
+                success: false,
+                error: 'Failed to parse extracted statistics from scorebook image.',
+                details: parseError.message
+            });
+        }
+
+        // Step 2: Generate coaching insights based on extracted stats
+        const insightsPrompt = `You are an experienced basketball coach analyzing game statistics for the ${team} team.
+
+Here are the extracted stats from the scorebook:
+${JSON.stringify(stats, null, 2)}
+
+Based on these statistics, provide detailed coaching insights in markdown format with these exact sections:
+
+## What Went Well
+Provide 2-3 specific observations about positive performance, referencing actual numbers from the stats.
+
+## Critical Areas for Improvement
+Provide 2-3 specific issues backed by data from the stats. Reference shooting percentages, scoring distribution, or foul trouble as applicable.
+
+## Practice Plan Recommendations
+Provide 4-5 specific drill recommendations that directly address the areas for improvement. Each drill should include a brief description of what it targets.
+
+## Player Spotlights
+Highlight the top 2-3 performers with specific praise. Reference their individual stats and contribution to the team.
+
+Be specific, actionable, and reference the actual numbers from the game stats.`;
+
+        let insightsResponse;
+        try {
+            insightsResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-5-20250929',
+                max_tokens: 4096,
+                messages: [{
+                    role: 'user',
+                    content: insightsPrompt
+                }]
+            });
+        } catch (apiError) {
+            console.error('Claude API error (insights):', apiError.message);
+            return res.status(502).json({
+                success: false,
+                error: 'Failed to generate coaching insights. Claude API error.',
+                details: apiError.message
+            });
+        }
+
+        const insights = insightsResponse.content[0].text;
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+
+        res.json({
+            success: true,
+            stats,
+            insights,
+            processingTime
+        });
+
+    } catch (error) {
+        console.error('Scorebook analysis error:', error);
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error during scorebook analysis.',
+            details: error.message,
+            processingTime
+        });
+    }
+});
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
