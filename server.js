@@ -386,24 +386,27 @@ IMPORTANT RULES:
 function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo = null) {
     // Build team identification section if teamInfo is provided
     let teamIdentification = '';
-    if (teamInfo && teamInfo.opponent && teamInfo.yourTeam) {
+    const opponentColor = teamInfo?.opponent?.jerseyColor?.toUpperCase() || null;
+    const yourTeamColor = teamInfo?.yourTeam?.jerseyColor?.toUpperCase() || null;
+
+    if (teamInfo && teamInfo.opponent && teamInfo.yourTeam && opponentColor) {
         teamIdentification = `
 ## 🎽 CRITICAL: TEAM IDENTIFICATION
 
-**You MUST distinguish between the two teams using jersey colors:**
+**You MUST distinguish between the two teams by their uniform/jersey colors.**
 
-| Team | Jersey Color | Role |
-|------|--------------|------|
-| **${teamInfo.opponent.name || opponentName}** | **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | ⚠️ **SCOUT THIS TEAM** - All analysis should focus on this team |
-| **${teamInfo.yourTeam.name || 'Opposing Team'}** | **${teamInfo.yourTeam.jerseyColor?.toUpperCase() || 'UNKNOWN'}** | Ignore this team except to note how opponent defends them |
+Note: Basketball courts are typically light-colored hardwood with white boundary lines. Do NOT confuse court markings or the court surface with jersey colors. Focus on the PLAYERS' UNIFORMS to identify teams.
 
-**IMPORTANT INSTRUCTIONS:**
-- When analyzing OFFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's offensive sets, plays, and tendencies
-- When analyzing DEFENSE: Focus on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team's defensive schemes and coverages
-- Analyze BOTH teams in the video, but focus your final report on the **${teamInfo.opponent.jerseyColor?.toUpperCase() || 'OPPONENT'}** jersey team
-- Track both teams' actions to understand the full game context
-- When reporting, provide analysis specifically about the ${teamInfo.opponent.jerseyColor?.toUpperCase() || 'opponent'} team's offense and defense
-- Use the other team's actions as context to understand what the opponent is doing
+| Team | Uniform Color | Role |
+|------|---------------|------|
+| **${teamInfo.opponent.name || opponentName}** | **${opponentColor}** uniforms/jerseys | ⚠️ **SCOUT THIS TEAM** - All analysis focuses here |
+| **${teamInfo.yourTeam.name || 'Your Team'}** | **${yourTeamColor || 'UNKNOWN'}** uniforms/jerseys | Context only - note how they are affected by the opponent |
+
+**INSTRUCTIONS:**
+- Focus ALL analysis (offense AND defense) on the players wearing **${opponentColor}**-colored uniforms
+- Identify ${opponentColor}-uniformed players by their jersey numbers and positions on the court
+- Use the ${yourTeamColor || 'other'}-uniformed team only as context to understand what the ${opponentColor} team is doing
+- If ${opponentColor} uniforms are hard to distinguish from the court or background, look for jersey numbers, shorts color, and shoe colors to track those players
 
 ---
 `;
@@ -411,7 +414,7 @@ function buildAnalysisPrompt(opponentName, frameCount, analysisOptions, teamInfo
         teamIdentification = `
 ## ⚠️ TEAM IDENTIFICATION
 
-No specific jersey colors were provided. Analyze BOTH teams in the video. Identify the two teams by their jersey colors, then provide comprehensive analysis of the team that appears to be the visiting/opponent team (typically the team that seems less familiar or has darker jerseys). Provide context about both teams but focus the final report on one consistent team.
+No specific jersey colors were provided. Identify the two teams by their uniform colors, then provide comprehensive analysis of the team that appears to be the visiting/opponent team. Look at jersey colors, shorts, and shoes to distinguish the two teams. Provide context about both teams but focus the final report on one consistent team.
 
 ---
 `;
@@ -427,9 +430,9 @@ No specific jersey colors were provided. Analyze BOTH teams in the video. Identi
 ${teamIdentification}
 ## INSTRUCTIONS
 
-Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
+Analyze these game frames and identify EVERYTHING you can observe about the **${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'opponent'}** team's offensive and defensive schemes. Identify players on this team by their uniform color, jersey numbers, and positions on the court. Consider all skill levels - this could be youth, middle school, high school, college, or professional basketball.
 
-**Remember: ONLY analyze the team wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} jerseys.**
+**Remember: Focus your analysis on the players wearing ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'the specified'} uniforms/jerseys. Do not confuse court markings or the light-colored court surface with uniform colors.**
 
 Use the comprehensive basketball knowledge provided to identify specific schemes, sets, and actions.
 
@@ -437,7 +440,7 @@ Use the comprehensive basketball knowledge provided to identify specific schemes
 
 ## DEFENSIVE IDENTIFICATION CHECKLIST
 
-**Analyze the ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'OPPONENT'} jersey team's defense:**
+**Analyze the ${teamInfo?.opponent?.jerseyColor?.toUpperCase() || 'OPPONENT'}-uniformed team's defense:**
 
 Look for and identify:
 
@@ -576,6 +579,43 @@ For EACH set you identify, track:
 - [ ] What do they do in CLUTCH situations?
 - [ ] What is the X-FACTOR that wins them games?
 - [ ] What MUST you stop to beat this team?
+
+### Shot Chart Analysis
+For EVERY shot attempt observed, track:
+- [ ] Where on the court was the shot taken? (estimate x,y coordinates on a 50x47 court, origin at bottom-left)
+- [ ] Was it made or missed?
+- [ ] What type of shot? (layup, mid-range, three-pointer, floater, dunk, free throw)
+- [ ] Who took the shot? (jersey number if visible)
+- [ ] Identify HOT ZONES (areas shooting above 45%)
+- [ ] Identify COLD ZONES (areas shooting below 30%)
+- [ ] Calculate shooting percentage by area: paint, mid-range left, mid-range right, left corner 3, right corner 3, wing 3 left, wing 3 right, top of key 3
+
+### Starting Five / Key Player Analysis
+Identify the 5 most important players (starting five or top rotation):
+- [ ] Jersey number and position for each
+- [ ] Offensive strengths (at least 2-3 per player)
+- [ ] Offensive weaknesses (at least 1-2 per player)
+- [ ] Defensive strengths and weaknesses
+- [ ] How to guard each player specifically (scouting advice)
+- [ ] Physical profile and athleticism notes
+
+### Out of Bounds Play Analysis
+Track ALL out of bounds situations:
+- [ ] BLOB (Baseline Out of Bounds): How many observed? What sets do they run? Who is the inbounder? Primary scoring option?
+- [ ] SLOB (Sideline Out of Bounds): How many observed? What sets do they run? Who is the inbounder? Primary scoring option?
+- [ ] Do they score frequently off OOB plays?
+- [ ] How to defend their BLOB plays specifically
+- [ ] How to defend their SLOB plays specifically
+
+### Primary Ball Handler Analysis
+Identify the player who handles the ball the most:
+- [ ] Jersey number and name/description
+- [ ] What percentage of possessions does this player have the ball?
+- [ ] Dominant hand and preferred direction
+- [ ] Ball handling tendencies (crossover, between legs, hesitation, etc.)
+- [ ] Decision-making in pick and roll (pass, drive, pull-up)
+- [ ] Turnover tendencies (when/where do they turn it over)
+- [ ] Best defensive strategy to contain this player
 
 ### Set Frequency & Scoring (TRACK EVERY SET)
 For each offensive set identified, count:
@@ -1032,8 +1072,24 @@ Provide your analysis in this JSON structure. Be thorough and specific:
       "effectiveness": "How well they attack zones"
     },
     "outOfBounds": {
-      "blob": "Baseline out of bounds tendencies",
-      "slob": "Sideline out of bounds tendencies"
+      "blob": {
+        "observed": true,
+        "frequency": 5,
+        "commonSets": ["Stack", "Box", "Line"],
+        "inbounder": "#5 - Point Guard",
+        "primaryOption": "#23 on curl to basket",
+        "scoringRate": "Scored on 3 of 5 attempts",
+        "howToDefend": "Switch on all screens, deny inbound to strong side"
+      },
+      "slob": {
+        "observed": true,
+        "frequency": 3,
+        "commonSets": ["Zipper", "Floppy"],
+        "inbounder": "#11 - Shooting Guard",
+        "primaryOption": "#23 off stagger screen",
+        "scoringRate": "Scored on 1 of 3 attempts",
+        "howToDefend": "Deny the first pass, force long inbound"
+      }
     },
     "weaknesses": [
       {
@@ -1044,12 +1100,14 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     "strengths": ["Offensive strength 1", "Offensive strength 2"]
   },
 
-  "keyPlayers": [
+  "startingFive": [
     {
-      "identifier": "Jersey # or description",
+      "jerseyNumber": "#23",
       "position": "PG | SG | SF | PF | C",
       "role": "primary_ball_handler | scorer | screener | shooter | rim_protector | glue_guy",
       "usage": "Estimated % of offense involvement",
+      "strengths": ["Quick first step", "Excellent court vision", "Consistent 3-point shooter"],
+      "weaknesses": ["Weak left hand", "Struggles against physical defense"],
       "offensiveTendencies": {
         "preferredHand": "right | left | both",
         "favoriteSpots": ["Locations on floor"],
@@ -1066,7 +1124,36 @@ Provide your analysis in this JSON structure. Be thorough and specific:
       },
       "physicalProfile": "Size/athleticism observations",
       "threatLevel": "high | medium | low",
-      "keyMatchup": "Who should guard them",
+      "howToGuard": "Force left, deny catch on right wing, go over screens, no help needed on drives left",
+      "notes": "Additional observations"
+    }
+  ],
+
+  "keyPlayers": [
+    {
+      "identifier": "Jersey # or description",
+      "position": "PG | SG | SF | PF | C",
+      "role": "primary_ball_handler | scorer | screener | shooter | rim_protector | glue_guy",
+      "usage": "Estimated % of offense involvement",
+      "strengths": ["Strength 1", "Strength 2"],
+      "weaknesses": ["Weakness 1", "Weakness 2"],
+      "offensiveTendencies": {
+        "preferredHand": "right | left | both",
+        "favoriteSpots": ["Locations on floor"],
+        "goToMoves": ["Signature moves"],
+        "shootingAbility": "Shooting assessment",
+        "ballHandling": "Ball handling assessment",
+        "postGame": "Post game if applicable",
+        "offBall": "Off-ball movement quality"
+      },
+      "defensiveTendencies": {
+        "onBall": "On-ball defense quality",
+        "help": "Help defense quality",
+        "rebounding": "Rebounding effort"
+      },
+      "physicalProfile": "Size/athleticism observations",
+      "threatLevel": "high | medium | low",
+      "howToGuard": "Specific defensive strategy for this player",
       "notes": "Additional observations"
     }
   ],
@@ -1087,6 +1174,66 @@ Provide your analysis in this JSON structure. Be thorough and specific:
     "endOfGame": "EOG situation tendencies",
     "pressBreak": "How they break pressure",
     "foulSituations": "Foul game tendencies"
+  },
+
+  "shotChart": {
+    "shots": [
+      {
+        "player": "#23",
+        "x": 25,
+        "y": 32,
+        "made": true,
+        "shotType": "three_pointer | mid_range | layup | floater | dunk | free_throw",
+        "area": "paint | mid_left | mid_right | left_corner_3 | right_corner_3 | left_wing_3 | right_wing_3 | top_key_3"
+      }
+    ],
+    "totalShots": 45,
+    "totalMade": 22,
+    "overallPercentage": 48.9,
+    "byArea": {
+      "paint": { "attempts": 15, "made": 10, "percentage": 66.7 },
+      "midRange": { "attempts": 8, "made": 3, "percentage": 37.5 },
+      "leftCorner3": { "attempts": 4, "made": 2, "percentage": 50.0 },
+      "rightCorner3": { "attempts": 5, "made": 3, "percentage": 60.0 },
+      "leftWing3": { "attempts": 5, "made": 2, "percentage": 40.0 },
+      "rightWing3": { "attempts": 4, "made": 1, "percentage": 25.0 },
+      "topKey3": { "attempts": 4, "made": 1, "percentage": 25.0 }
+    },
+    "hotZones": [
+      { "area": "paint", "percentage": 66.7, "description": "Dominant inside scoring" },
+      { "area": "right_corner_3", "percentage": 60.0, "description": "Corner specialist" }
+    ],
+    "coldZones": [
+      { "area": "right_wing_3", "percentage": 25.0, "description": "Avoid forcing shots here" }
+    ]
+  },
+
+  "primaryBallHandler": {
+    "jerseyNumber": "#23",
+    "description": "Point Guard, team captain",
+    "possessionPercentage": 68,
+    "dominantHand": "right",
+    "preferredDirection": "right",
+    "ballHandlingMoves": ["crossover", "between_legs", "hesitation", "step_back"],
+    "tendencies": {
+      "pickAndRoll": "Attacks right side, reads roller vs pop, prefers pocket pass",
+      "isolation": "Step-back three from right wing, drives left reluctantly",
+      "transition": "Pushes pace aggressively, looks for outlet ahead first",
+      "halfCourt": "Calls sets, uses DHO with wing players, patient"
+    },
+    "decisionMaking": {
+      "passFirst": false,
+      "turnoverProne": "Under pressure from traps and aggressive hedges",
+      "assistRate": "Estimated 6-8 assists per game",
+      "readQuality": "Good reads off PnR, struggles vs switching defenses"
+    },
+    "defensiveStrategy": {
+      "primary": "Force left - he is significantly weaker going left",
+      "onScreens": "ICE ball screens to keep him on his weak hand",
+      "inTransition": "Get back and set up, don't let him push pace",
+      "pressure": "Full court pressure causes turnovers, pick him up early",
+      "trapping": "Trap on strong side ball screens, rotate weak side"
+    }
   },
 
   "teamStrengths": [
@@ -1403,7 +1550,7 @@ async function processVideoFile(reportId, videoPath, opponentName, analysisOptio
         }
         
         updateReport(reportId, { progress: 30, progressText: 'Extracting frames...' });
-        const frames = await extractFrames(processedPath, tempDir);
+        const frames = await extractFrames(processedPath, tempDir, videoInfo?.duration);
         
         // Log team info for debugging
         if (teamInfo) {
@@ -1451,7 +1598,7 @@ async function analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo
     
     const response = await anthropic.messages.create({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 8192,
+        max_tokens: 16384,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imageContent] }]
     });
@@ -1504,7 +1651,7 @@ function getVideoInfo(videoPath) {
 function compressVideo(inputPath, outputPath) {
     return new Promise((resolve, reject) => {
         ffmpeg(inputPath)
-            .outputOptions(['-c:v libx264', '-preset fast', '-crf 28', '-vf scale=854:-2', '-t 600', '-an', '-y'])
+            .outputOptions(['-c:v libx264', '-preset fast', '-crf 23', '-vf scale=854:-2', '-an', '-y'])
             .output(outputPath)
             .on('end', () => resolve(outputPath))
             .on('error', reject)
@@ -1512,14 +1659,25 @@ function compressVideo(inputPath, outputPath) {
     });
 }
 
-async function extractFrames(videoPath, outputDir) {
+async function extractFrames(videoPath, outputDir, videoDuration = null) {
     return new Promise((resolve, reject) => {
         const frames = [];
         const framesDir = path.join(outputDir, 'frames');
         fs.mkdirSync(framesDir, { recursive: true });
 
+        // Dynamically calculate frame interval to cover the ENTIRE video
+        const MAX_FRAMES = 60;
+        const MIN_INTERVAL = 3; // seconds - minimum gap between frames
+        const duration = videoDuration ? parseFloat(videoDuration) : 120;
+
+        // Calculate interval so frames span the full video
+        const interval = Math.max(MIN_INTERVAL, Math.ceil(duration / MAX_FRAMES));
+        const maxFrames = Math.min(MAX_FRAMES, Math.ceil(duration / interval));
+
+        console.log(`🎬 Frame extraction: ${Math.round(duration)}s video → 1 frame every ${interval}s, max ${maxFrames} frames`);
+
         ffmpeg(videoPath)
-            .outputOptions(['-vf', 'fps=1/5,scale=800:-1', '-frames:v', '24', '-q:v', '4'])
+            .outputOptions(['-vf', `fps=1/${interval},scale=800:-2`, '-frames:v', `${maxFrames}`, '-q:v', '2'])
             .output(path.join(framesDir, 'frame_%03d.jpg'))
             .on('end', () => {
                 const files = fs.readdirSync(framesDir).filter(f => f.endsWith('.jpg')).sort();
@@ -1560,7 +1718,29 @@ function generateReport(analysis, opponentName, frameCount, videoInfo, teamInfo 
         defense: analysis?.defense || { primary: { scheme: 'Unknown' } },
         offense: analysis?.offense || { primary: { system: 'Unknown' } },
         keyPlayers: analysis?.keyPlayers || [],
+        startingFive: analysis?.startingFive || [],
         pace: analysis?.pace || { rating: 50 },
+
+        // Shot Chart
+        shotChart: analysis?.shotChart || {
+            shots: [],
+            totalShots: null,
+            totalMade: null,
+            overallPercentage: null,
+            byArea: {},
+            hotZones: [],
+            coldZones: []
+        },
+
+        // Primary Ball Handler
+        primaryBallHandler: analysis?.primaryBallHandler || {
+            jerseyNumber: null,
+            description: null,
+            possessionPercentage: null,
+            dominantHand: null,
+            tendencies: {},
+            defensiveStrategy: {}
+        },
         
         // Enhanced Analytics
         paceAndTempo: analysis?.paceAndTempo || {
