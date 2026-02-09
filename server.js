@@ -10,9 +10,38 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const { Resend } = require('resend');
+const { validateImage, compressImage, extractJSON } = require('./utils/imageProcessing');
+
+// ===========================================
+// ENVIRONMENT VALIDATION
+// ===========================================
+
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const PORT = process.env.PORT || 3000;
+const FRONTEND_URL = process.env.FRONTEND_URL || '*';
+
+if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('===========================================');
+    console.error('FATAL: ANTHROPIC_API_KEY is not set.');
+    console.error('');
+    console.error('The server cannot start without this key.');
+    console.error('');
+    console.error('To fix this:');
+    console.error('  Local:   export ANTHROPIC_API_KEY=your-key-here');
+    console.error('  Railway: Add ANTHROPIC_API_KEY in your service Variables tab');
+    console.error('           (Settings → Variables → New Variable)');
+    console.error('===========================================');
+    process.exit(1);
+}
 
 const app = express();
-app.use(cors());
+
+// Configure CORS with FRONTEND_URL
+app.use(cors({
+    origin: FRONTEND_URL === '*' ? '*' : FRONTEND_URL.split(',').map(u => u.trim()),
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '100mb' }));
 
 // Configure multer
@@ -1333,7 +1362,7 @@ app.get('/', (req, res) => {
     res.json({ 
         status: 'CoachIQ API running', 
         version: '6.0.0-comprehensive',
-        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis']
+        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis', 'scorebook-analysis']
     });
 });
 
@@ -1919,10 +1948,231 @@ function cleanup(dir) {
     try { if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {}
 }
 
-const PORT = process.env.PORT || 3001;
+// ===========================================
+// SCOREBOOK ANALYSIS ENDPOINT
+// ===========================================
+
+function scorebookLogger(req, res, next) {
+    const startTime = Date.now();
+    const { image, team } = req.body || {};
+    const imageSizeKB = image && typeof image === 'string'
+        ? (Buffer.byteLength(image, 'utf8') / 1024).toFixed(1)
+        : '0';
+
+    console.log(`[SCOREBOOK] ${new Date().toISOString()} | POST /api/analyze-scorebook | team=${team || 'N/A'} | imageSize=${imageSizeKB}KB`);
+
+    // Intercept res.json to log response details
+    const originalJson = res.json.bind(res);
+    res.json = (body) => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        if (body && body.success) {
+            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=success`);
+        } else {
+            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=failed | error=${body?.error || 'unknown'}`);
+        }
+        return originalJson(body);
+    };
+
+    next();
+}
+
+app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { image, team } = req.body;
+
+        // Validate required fields
+        if (!team || !['home', 'away'].includes(team)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing or invalid "team" field. Must be "home" or "away".'
+            });
+        }
+
+        // Validate the image using utility function
+        const validation = validateImage(image);
+        if (!validation.valid) {
+            return res.status(400).json({
+                success: false,
+                error: validation.error
+            });
+        }
+
+        // Compress image if needed (>5MB → ~2MB) and convert HEIC to JPEG
+        let { base64Data, mediaType } = validation;
+        try {
+            const compressed = await compressImage(image, 2);
+            base64Data = compressed.base64Data;
+            mediaType = compressed.mediaType;
+            if (compressed.compressed) {
+                console.log(`Image compressed: ${compressed.originalSizeMB}MB → ${compressed.finalSizeMB}MB`);
+            }
+        } catch (compressError) {
+            console.error('Image compression error:', compressError.message);
+            // Fall through with original validated data if compression fails
+        }
+
+        // Step 1: Extract stats from scorebook image
+        const extractionPrompt = `You are analyzing a basketball scorebook photo for the ${team} team.
+
+Extract the basketball statistics from this scorebook image and return ONLY valid JSON in this exact format (no markdown, no explanation, just the JSON object):
+{
+  "quarters": {"Q1": <number>, "Q2": <number>, "Q3": <number>, "Q4": <number>},
+  "finalScore": <number>,
+  "players": [
+    {
+      "number": "<jersey number as string>",
+      "name": "<player name>",
+      "points": <number>,
+      "fieldGoalsMade": <number>,
+      "fieldGoalsAttempted": <number>,
+      "freeThrowsMade": <number>,
+      "freeThrowsAttempted": <number>,
+      "fouls": <number>
+    }
+  ],
+  "teamTotals": {
+    "totalPoints": <number>,
+    "fieldGoalPercentage": <number>,
+    "freeThrowPercentage": <number>
+  }
+}
+
+Important:
+- Focus on the ${team} team's data
+- If a value cannot be determined from the scorebook, use 0
+- Calculate fieldGoalPercentage and freeThrowPercentage as decimal values (e.g. 0.45 for 45%)
+- Include all players visible in the scorebook
+- Return ONLY the JSON object, nothing else`;
+
+        let statsResponse;
+        try {
+            statsResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-5-20250929',
+                max_tokens: 4096,
+                messages: [{
+                    role: 'user',
+                    content: [
+                        {
+                            type: 'image',
+                            source: {
+                                type: 'base64',
+                                media_type: mediaType,
+                                data: base64Data
+                            }
+                        },
+                        {
+                            type: 'text',
+                            text: extractionPrompt
+                        }
+                    ]
+                }]
+            });
+        } catch (apiError) {
+            console.error('Claude API error (stats extraction):', apiError.message);
+            return res.status(502).json({
+                success: false,
+                error: 'Failed to analyze scorebook image. Claude API error.',
+                details: apiError.message
+            });
+        }
+
+        // Parse the extracted stats using utility function
+        let stats;
+        try {
+            stats = extractJSON(statsResponse.content[0].text);
+        } catch (parseError) {
+            console.error('JSON parse error (stats):', parseError.message);
+            console.error('Raw response:', statsResponse.content[0].text);
+            return res.status(422).json({
+                success: false,
+                error: 'Failed to parse extracted statistics from scorebook image.',
+                details: parseError.message
+            });
+        }
+
+        // Step 2: Generate coaching insights based on extracted stats
+        const insightsPrompt = `You are an experienced basketball coach analyzing game statistics for the ${team} team.
+
+Here are the extracted stats from the scorebook:
+${JSON.stringify(stats, null, 2)}
+
+Based on these statistics, provide detailed coaching insights in markdown format with these exact sections:
+
+## What Went Well
+Provide 2-3 specific observations about positive performance, referencing actual numbers from the stats.
+
+## Critical Areas for Improvement
+Provide 2-3 specific issues backed by data from the stats. Reference shooting percentages, scoring distribution, or foul trouble as applicable.
+
+## Practice Plan Recommendations
+Provide 4-5 specific drill recommendations that directly address the areas for improvement. Each drill should include a brief description of what it targets.
+
+## Player Spotlights
+Highlight the top 2-3 performers with specific praise. Reference their individual stats and contribution to the team.
+
+Be specific, actionable, and reference the actual numbers from the game stats.`;
+
+        let insightsResponse;
+        try {
+            insightsResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-5-20250929',
+                max_tokens: 4096,
+                messages: [{
+                    role: 'user',
+                    content: insightsPrompt
+                }]
+            });
+        } catch (apiError) {
+            console.error('Claude API error (insights):', apiError.message);
+            return res.status(502).json({
+                success: false,
+                error: 'Failed to generate coaching insights. Claude API error.',
+                details: apiError.message
+            });
+        }
+
+        const insights = insightsResponse.content[0].text;
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+
+        res.json({
+            success: true,
+            stats,
+            insights,
+            processingTime
+        });
+
+    } catch (error) {
+        console.error('Scorebook analysis error:', error);
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error during scorebook analysis.',
+            details: error.message,
+            processingTime
+        });
+    }
+});
+
 app.listen(PORT, () => {
-    console.log(`🏀 CoachIQ v6.0 COMPREHENSIVE running on port ${PORT}`);
-    console.log(`📊 All skill levels: Youth → Middle School → High School → College → Pro`);
-    console.log(`🛡️ All defensive schemes: 40+ variations`);
-    console.log(`⚡ All offensive sets: 60+ actions and plays`);
+    console.log('===========================================');
+    console.log(`CoachIQ v6.0 COMPREHENSIVE`);
+    console.log(`Environment: ${NODE_ENV}`);
+    console.log(`Port:        ${PORT}`);
+    console.log(`CORS origin: ${FRONTEND_URL}`);
+    console.log('-------------------------------------------');
+    console.log('API Endpoints:');
+    console.log('  GET  /                          Status');
+    console.log('  GET  /health                    Health check');
+    console.log('  POST /api/users/register        Register user');
+    console.log('  GET  /api/users/:email          Get user');
+    console.log('  GET  /api/users/:email/reports  Get user reports');
+    console.log('  GET  /api/reports/:id            Get report');
+    console.log('  POST /api/upload/init           Init upload');
+    console.log('  POST /api/upload/chunk          Upload chunk');
+    console.log('  POST /api/upload/finalize       Finalize upload');
+    console.log('  POST /api/upload/simple         Simple upload');
+    console.log('  POST /api/analyze-scorebook     Scorebook analysis');
+    console.log('===========================================');
 });
