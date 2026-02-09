@@ -372,12 +372,13 @@ You can identify schemes at ANY skill level - from a basic youth motion offense 
 ${BASKETBALL_KNOWLEDGE}
 
 IMPORTANT RULES:
-1. Only identify what you can ACTUALLY SEE in the frames
+1. Base your analysis on what you observe in the frames, but ALWAYS provide your best estimates for ALL numeric fields - never return text like "Unable to determine" or "No data" where a number is expected
 2. Don't fabricate jersey numbers or player names you can't read
-3. State your confidence level for each observation
+3. Use the confidence scores (0-100) to express how certain you are - low confidence is fine, but always provide numeric estimates
 4. If you see a simplified version of a scheme, identify it appropriately
 5. Consider the apparent skill level when making identifications
-6. Provide actionable insights regardless of competition level`;
+6. Provide actionable insights regardless of competition level
+7. Even with limited footage, extrapolate reasonable estimates from what you CAN see - a few possessions can reveal tendencies`;
 
 // ===========================================
 // ANALYSIS PROMPT BUILDER
@@ -1314,11 +1315,14 @@ Provide your analysis in this JSON structure. Be thorough and specific:
 }
 \`\`\`
 
-Remember:
+CRITICAL RESPONSE RULES:
+- ALL numeric fields MUST contain actual numbers, never text like "Unable to determine" or "N/A"
+- If uncertain, provide your best estimate and reflect uncertainty in the confidence scores
+- Even from limited frames, you can identify defensive stance (man vs zone), offensive spacing, pace tendencies, and ball movement patterns
 - Identify the specific scheme names from the reference list
 - Consider the skill level when evaluating execution
-- Only report what you can actually observe
-- Provide actionable recommendations for any coaching level`;
+- Provide actionable recommendations for any coaching level
+- A low-confidence numeric estimate is ALWAYS better than "Unable to determine"`;
 }
 
 // ===========================================
@@ -1604,11 +1608,27 @@ async function analyzeWithClaude(frames, opponentName, analysisOptions, teamInfo
     });
 
     const text = response.content[0].text;
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
-    
-    if (jsonMatch) {
-        return JSON.parse(jsonMatch[1] || jsonMatch[0]);
+    console.log(`📊 Claude response length: ${text.length} chars, stop_reason: ${response.stop_reason}`);
+
+    if (response.stop_reason === 'max_tokens') {
+        console.warn('⚠️ Response was truncated due to max_tokens limit - JSON may be incomplete');
     }
+
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/\{[\s\S]*\}/);
+
+    if (jsonMatch) {
+        try {
+            const parsed = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+            console.log(`✅ Successfully parsed analysis JSON (confidence: ${parsed?.confidence?.overall || 'N/A'})`);
+            return parsed;
+        } catch (parseError) {
+            console.error(`❌ JSON parse error: ${parseError.message}`);
+            console.error(`   Raw match (first 500 chars): ${(jsonMatch[1] || jsonMatch[0]).substring(0, 500)}`);
+            return null;
+        }
+    }
+    console.error('❌ No JSON found in Claude response');
+    console.error(`   Response preview: ${text.substring(0, 500)}`);
     return null;
 }
 
@@ -1693,7 +1713,79 @@ async function extractFrames(videoPath, outputDir, videoDuration = null) {
     });
 }
 
+// Sanitize AI response: ensure numeric fields contain numbers, not text
+function sanitizeNumeric(value, fallback = null) {
+    if (value === null || value === undefined) return fallback;
+    if (typeof value === 'number' && !isNaN(value)) return value;
+    if (typeof value === 'string') {
+        const parsed = parseFloat(value);
+        if (!isNaN(parsed)) return parsed;
+    }
+    return fallback;
+}
+
+function sanitizeAnalysis(analysis) {
+    if (!analysis) return analysis;
+
+    // Sanitize pace
+    if (analysis.pace) {
+        analysis.pace.rating = sanitizeNumeric(analysis.pace.rating, 50);
+    }
+
+    // Sanitize paceAndTempo
+    if (analysis.paceAndTempo) {
+        analysis.paceAndTempo.possessionsPerGameEstimate = sanitizeNumeric(analysis.paceAndTempo.possessionsPerGameEstimate);
+        analysis.paceAndTempo.paceRating = sanitizeNumeric(analysis.paceAndTempo.paceRating);
+    }
+
+    // Sanitize paceAnalysis
+    if (analysis.paceAnalysis) {
+        analysis.paceAnalysis.possessionsObserved = sanitizeNumeric(analysis.paceAnalysis.possessionsObserved);
+        analysis.paceAnalysis.estimatedPossessionsPerGame = sanitizeNumeric(analysis.paceAnalysis.estimatedPossessionsPerGame);
+        analysis.paceAnalysis.paceRating = sanitizeNumeric(analysis.paceAnalysis.paceRating);
+    }
+
+    // Sanitize ballMovementAnalytics
+    if (analysis.ballMovementAnalytics) {
+        analysis.ballMovementAnalytics.reversalsPerPossession = sanitizeNumeric(analysis.ballMovementAnalytics.reversalsPerPossession);
+        analysis.ballMovementAnalytics.passesBeforeShot = sanitizeNumeric(analysis.ballMovementAnalytics.passesBeforeShot);
+    }
+
+    // Sanitize ballMovementMetrics
+    if (analysis.ballMovementMetrics) {
+        analysis.ballMovementMetrics.totalBallReversals = sanitizeNumeric(analysis.ballMovementMetrics.totalBallReversals);
+        analysis.ballMovementMetrics.reversalsPerPossession = sanitizeNumeric(analysis.ballMovementMetrics.reversalsPerPossession);
+        analysis.ballMovementMetrics.passesPerPossession = sanitizeNumeric(analysis.ballMovementMetrics.passesPerPossession);
+    }
+
+    // Sanitize turnoverAnalysis
+    if (analysis.turnoverAnalysis) {
+        analysis.turnoverAnalysis.estimatedTurnoverRate = sanitizeNumeric(analysis.turnoverAnalysis.estimatedTurnoverRate);
+    }
+
+    // Sanitize turnoverToScoreAnalysis
+    if (analysis.turnoverToScoreAnalysis) {
+        analysis.turnoverToScoreAnalysis.opponentTurnoversObserved = sanitizeNumeric(analysis.turnoverToScoreAnalysis.opponentTurnoversObserved);
+        analysis.turnoverToScoreAnalysis.turnoversConvertedToScores = sanitizeNumeric(analysis.turnoverToScoreAnalysis.turnoversConvertedToScores);
+        analysis.turnoverToScoreAnalysis.turnoverConversionRate = sanitizeNumeric(analysis.turnoverToScoreAnalysis.turnoverConversionRate);
+    }
+
+    // Sanitize confidence
+    if (analysis.confidence) {
+        analysis.confidence.overall = sanitizeNumeric(analysis.confidence.overall, 25);
+        analysis.confidence.defensiveAnalysis = sanitizeNumeric(analysis.confidence.defensiveAnalysis, 25);
+        analysis.confidence.offensiveAnalysis = sanitizeNumeric(analysis.confidence.offensiveAnalysis, 25);
+        analysis.confidence.playerIdentification = sanitizeNumeric(analysis.confidence.playerIdentification, 15);
+        analysis.confidence.recommendations = sanitizeNumeric(analysis.confidence.recommendations, 25);
+    }
+
+    return analysis;
+}
+
 function generateReport(analysis, opponentName, frameCount, videoInfo, teamInfo = null) {
+    // Sanitize AI response before building report
+    analysis = sanitizeAnalysis(analysis);
+
     return {
         opponent: opponentName,
         generatedAt: new Date().toISOString(),
