@@ -1727,10 +1727,11 @@ app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
             });
         }
 
-        // Compress image if needed (>5MB → ~2MB) and convert HEIC to JPEG
+        // Compress image if too large, but use a high threshold to preserve
+        // handwritten scorebook detail. Claude vision accepts up to 20MB.
         let { base64Data, mediaType } = validation;
         try {
-            const compressed = await compressImage(image, 2);
+            const compressed = await compressImage(image, 10);
             base64Data = compressed.base64Data;
             mediaType = compressed.mediaType;
             if (compressed.compressed) {
@@ -1742,63 +1743,82 @@ app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
         }
 
         // Step 1: Extract stats from scorebook image
-        const extractionPrompt = `You are an expert at reading handwritten basketball scorebooks. You are analyzing a scorebook photo for the ${team} team.
+        const extractionPrompt = `You are an expert at reading handwritten basketball scorebooks. Analyze this scorebook photo for the ${team} team.
 
-CRITICAL: This is a handwritten paper scorebook. Read it very carefully using these guidelines:
+Follow these steps IN ORDER. Do each step carefully before moving on.
 
-HOW TO READ A BASKETBALL SCOREBOOK:
-1. FINAL SCORE & QUARTER SCORES: Look at the TOP of the scorebook for labeled fields like "FIRST Q SCORE", "FIRST HALF SCORE", "THIRD Q SCORE", and "FINAL SCORE". These are usually CUMULATIVE (running totals), so:
-   - Q1 points = "FIRST Q SCORE" value
-   - Q2 points = "FIRST HALF SCORE" minus "FIRST Q SCORE"
-   - Q3 points = "THIRD Q SCORE" minus "FIRST HALF SCORE"
-   - Q4 points = "FINAL SCORE" minus "THIRD Q SCORE"
-   The FINAL SCORE field is the definitive total. Always use it.
+━━━ STEP 1: READ THE HEADER SCORES ━━━
+Look at the TOP-RIGHT area of the scorebook page for these labeled fields:
+  • "FIRST Q SCORE" — this is the cumulative score after Q1
+  • "FIRST HALF SCORE" — cumulative score after Q2
+  • "THIRD Q SCORE" — cumulative score after Q3
+  • "FINAL SCORE" — the definitive game total
 
-2. PLAYER STATS: Each player has a row. Look at the RIGHT side of each row for the SCORING SUMMARY columns:
-   - "FG" or "2's" = two-point field goals made
-   - "3's" = three-point field goals made
-   - "FT A" or "FTA" = free throws attempted
-   - "FT M" or "FTM" = free throws made
-   - "TP" = total points (this is the authoritative point total per player)
-   Use the SCORING SUMMARY columns (right side) as the primary source for stats, NOT the tally marks in the quarter sections which are harder to read.
+These are CUMULATIVE (running totals). Convert to per-quarter scoring:
+  Q1 = FIRST Q SCORE
+  Q2 = FIRST HALF SCORE − FIRST Q SCORE
+  Q3 = THIRD Q SCORE − FIRST HALF SCORE
+  Q4 = FINAL SCORE − THIRD Q SCORE
 
-3. PERSONAL FOULS: Listed in the "PERSONAL FOULS" column, usually as circled numbers (P1, P2, P3, P4, P5).
+VALIDATION: Q1 + Q2 + Q3 + Q4 MUST equal FINAL SCORE. If it does not, re-read the header values. All four quarters must have values — a real basketball game has scoring in all quarters. Do NOT return 0 for Q3 or Q4 unless the header explicitly shows the cumulative score did not change.
 
-4. FIELD GOALS: Total field goals made = two-point FGs + three-point FGs. Total field goals attempted must be estimated from the quarter tally marks (made shots shown as filled dots or numbers, missed shots as open circles or dashes). If you cannot determine attempts, estimate from the made shots.
+━━━ STEP 2: READ EACH PLAYER ROW ━━━
+Each player row has columns. Focus on the SCORING SUMMARY columns on the FAR RIGHT of the row:
+  • "FG" or "2's" column = two-point field goals MADE
+  • "3's" column = three-point field goals MADE
+  • "FT A" or "FA" column = free throws ATTEMPTED
+  • "FT M" or "FM" column = free throws MADE
+  • "TP" column = TOTAL POINTS (the rightmost number column — this is authoritative)
 
-5. VALIDATION: The sum of all players' TP values should equal the FINAL SCORE. If they don't match, trust the FINAL SCORE and re-examine the individual TP values.
+For field goals attempted: count made shots + missed shots from the quarter sections if visible. A filled dot ● = made shot, an open circle ○ = missed shot. If attempts are unclear, set fieldGoalsAttempted = fieldGoalsMade (conservative estimate).
 
-Extract the statistics and return ONLY valid JSON in this exact format (no markdown, no explanation, just the JSON object):
+For personal fouls: count how many of P1, P2, P3, P4, P5 are marked/crossed out.
+
+Include EVERY player listed, even those with all zeros.
+
+━━━ STEP 3: COMPUTE TEAM TOTALS ━━━
+Using the player data you extracted:
+  totalPoints = FINAL SCORE from the header (this is authoritative)
+  totalFGMade = sum of all players' (two-point FGs + three-point FGs)
+  totalFGAttempted = sum of all players' fieldGoalsAttempted
+  totalFTMade = sum of all players' freeThrowsMade
+  totalFTAttempted = sum of all players' freeThrowsAttempted
+  fieldGoalPercentage = totalFGMade / totalFGAttempted (as decimal, e.g. 0.45)
+  freeThrowPercentage = totalFTMade / totalFTAttempted (as decimal, e.g. 0.80)
+
+If totalFGAttempted is 0, set fieldGoalPercentage to 0.
+If totalFTAttempted is 0, set freeThrowPercentage to 0.
+
+━━━ STEP 4: VALIDATE ━━━
+Before outputting, check:
+  ✓ Q1 + Q2 + Q3 + Q4 = finalScore
+  ✓ Sum of all players' points ≈ finalScore (should match or be very close)
+  ✓ fieldGoalPercentage and freeThrowPercentage are between 0 and 1
+  ✓ No quarter value is 0 unless you are certain from the header
+
+━━━ OUTPUT ━━━
+Return ONLY this JSON (no markdown fences, no explanation):
 {
   "quarters": {"Q1": <number>, "Q2": <number>, "Q3": <number>, "Q4": <number>},
   "finalScore": <number>,
   "players": [
     {
-      "number": "<jersey number as string>",
+      "number": "<jersey number>",
       "name": "<player name>",
-      "points": <number from TP column>,
-      "fieldGoalsMade": <number>,
-      "fieldGoalsAttempted": <number>,
-      "freeThrowsMade": <number>,
-      "freeThrowsAttempted": <number>,
-      "fouls": <number of personal fouls>
+      "points": <from TP column>,
+      "fieldGoalsMade": <2pt FGs + 3pt FGs>,
+      "fieldGoalsAttempted": <total FG attempts>,
+      "freeThrowsMade": <FT made>,
+      "freeThrowsAttempted": <FT attempted>,
+      "fouls": <personal foul count>
     }
   ],
   "teamTotals": {
-    "totalPoints": <number from FINAL SCORE>,
-    "fieldGoalPercentage": <number as decimal>,
-    "freeThrowPercentage": <number as decimal>
+    "totalPoints": <FINAL SCORE from header>,
+    "fieldGoalPercentage": <decimal 0-1>,
+    "freeThrowPercentage": <decimal 0-1>
   }
-}
-
-Important:
-- Focus on the ${team} team's data
-- Use the FINAL SCORE from the top of the scorebook as the definitive total
-- Use TP (total points) column for each player's points
-- If a value cannot be determined, use 0
-- Calculate fieldGoalPercentage and freeThrowPercentage as decimal values (e.g. 0.45 for 45%)
-- Include ALL players listed in the scorebook, even those with 0 points
-- Return ONLY the JSON object, nothing else`;
+}`;
 
         let statsResponse;
         try {
