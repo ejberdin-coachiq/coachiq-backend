@@ -10,7 +10,7 @@ const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const { Resend } = require('resend');
-const { validateImage, compressImage, extractJSON } = require('./utils/imageProcessing');
+const { validateImage, compressImage, extractJSON, normalizeOrientation, computeTeamTotals } = require('./utils/imageProcessing');
 
 // ===========================================
 // ENVIRONMENT VALIDATION
@@ -1949,73 +1949,10 @@ function cleanup(dir) {
 }
 
 // ===========================================
-// SCOREBOOK ANALYSIS ENDPOINT
+// SCOREBOOK ANALYSIS ENDPOINTS
 // ===========================================
 
-function scorebookLogger(req, res, next) {
-    const startTime = Date.now();
-    const { image, team } = req.body || {};
-    const imageSizeKB = image && typeof image === 'string'
-        ? (Buffer.byteLength(image, 'utf8') / 1024).toFixed(1)
-        : '0';
-
-    console.log(`[SCOREBOOK] ${new Date().toISOString()} | POST /api/analyze-scorebook | team=${team || 'N/A'} | imageSize=${imageSizeKB}KB`);
-
-    // Intercept res.json to log response details
-    const originalJson = res.json.bind(res);
-    res.json = (body) => {
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        if (body && body.success) {
-            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=success`);
-        } else {
-            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=failed | error=${body?.error || 'unknown'}`);
-        }
-        return originalJson(body);
-    };
-
-    next();
-}
-
-app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
-    const startTime = Date.now();
-
-    try {
-        const { image, team } = req.body;
-
-        // Validate required fields
-        if (!team || !['home', 'away'].includes(team)) {
-            return res.status(400).json({
-                success: false,
-                error: 'Missing or invalid "team" field. Must be "home" or "away".'
-            });
-        }
-
-        // Validate the image using utility function
-        const validation = validateImage(image);
-        if (!validation.valid) {
-            return res.status(400).json({
-                success: false,
-                error: validation.error
-            });
-        }
-
-        // Compress image if too large, but use a high threshold to preserve
-        // handwritten scorebook detail. Claude vision accepts up to 20MB.
-        let { base64Data, mediaType } = validation;
-        try {
-            const compressed = await compressImage(image, 10);
-            base64Data = compressed.base64Data;
-            mediaType = compressed.mediaType;
-            if (compressed.compressed) {
-                console.log(`Image compressed: ${compressed.originalSizeMB}MB → ${compressed.finalSizeMB}MB`);
-            }
-        } catch (compressError) {
-            console.error('Image compression error:', compressError.message);
-            // Fall through with original validated data if compression fails
-        }
-
-        // Step 1: Extract stats from scorebook image
-        const extractionPrompt = `You are an expert at reading handwritten basketball scorebooks. Analyze this scorebook photo for the ${team} team.
+const SCOREBOOK_EXTRACTION_PROMPT = (teamLabel) => `You are an expert at reading handwritten basketball scorebooks. Analyze this scorebook photo for the ${teamLabel} team.
 
 Follow these steps IN ORDER. Do each step carefully before moving on.
 
@@ -2087,62 +2024,184 @@ Return ONLY this JSON (no markdown fences, no explanation):
   ],
   "teamTotals": {
     "totalPoints": <FINAL SCORE from header>,
+    "totalFieldGoalsMade": <sum of all FG made>,
+    "totalFieldGoalsAttempted": <sum of all FG attempted>,
+    "totalFreeThrowsMade": <sum of all FT made>,
+    "totalFreeThrowsAttempted": <sum of all FT attempted>,
     "fieldGoalPercentage": <decimal 0-1>,
     "freeThrowPercentage": <decimal 0-1>
   }
 }`;
 
-        let statsResponse;
-        try {
-            statsResponse = await anthropic.messages.create({
-                model: 'claude-sonnet-4-5-20250929',
-                max_tokens: 4096,
-                messages: [{
-                    role: 'user',
-                    content: [
-                        {
-                            type: 'image',
-                            source: {
-                                type: 'base64',
-                                media_type: mediaType,
-                                data: base64Data
-                            }
-                        },
-                        {
-                            type: 'text',
-                            text: extractionPrompt
+/**
+ * Processes a single scorebook image: validates, orients, compresses,
+ * sends to Claude for extraction, parses JSON, and computes team totals.
+ * Returns { stats } or throws an error with a user-facing message.
+ */
+async function processScorebook(imageBase64, teamLabel) {
+    // Validate image
+    const validation = validateImage(imageBase64);
+    if (!validation.valid) {
+        const err = new Error(validation.error);
+        err.statusCode = 400;
+        throw err;
+    }
+
+    let { base64Data, mediaType } = validation;
+
+    // Auto-rotate based on EXIF orientation so the image is right-side-up
+    try {
+        const oriented = await normalizeOrientation(imageBase64);
+        base64Data = oriented.base64Data;
+        mediaType = oriented.mediaType;
+        if (oriented.rotated) {
+            console.log(`[SCOREBOOK] Image auto-rotated for ${teamLabel} team`);
+        }
+    } catch (orientError) {
+        console.error('Orientation normalization error:', orientError.message);
+    }
+
+    // Compress if over 10MB (preserve detail for handwritten scorebooks)
+    try {
+        const compressed = await compressImage(
+            `data:${mediaType};base64,${base64Data}`, 10
+        );
+        base64Data = compressed.base64Data;
+        mediaType = compressed.mediaType;
+        if (compressed.compressed) {
+            console.log(`[SCOREBOOK] ${teamLabel} image compressed: ${compressed.originalSizeMB}MB → ${compressed.finalSizeMB}MB`);
+        }
+    } catch (compressError) {
+        console.error('Image compression error:', compressError.message);
+    }
+
+    // Call Claude vision to extract stats
+    let statsResponse;
+    try {
+        statsResponse = await anthropic.messages.create({
+            model: 'claude-sonnet-4-5-20250929',
+            max_tokens: 4096,
+            messages: [{
+                role: 'user',
+                content: [
+                    {
+                        type: 'image',
+                        source: {
+                            type: 'base64',
+                            media_type: mediaType,
+                            data: base64Data
                         }
-                    ]
-                }]
-            });
-        } catch (apiError) {
-            console.error('Claude API error (stats extraction):', apiError.message);
-            return res.status(502).json({
+                    },
+                    {
+                        type: 'text',
+                        text: SCOREBOOK_EXTRACTION_PROMPT(teamLabel)
+                    }
+                ]
+            }]
+        });
+    } catch (apiError) {
+        const err = new Error('Failed to analyze scorebook image. Claude API error: ' + apiError.message);
+        err.statusCode = 502;
+        throw err;
+    }
+
+    // Parse JSON from Claude response
+    let stats;
+    try {
+        stats = extractJSON(statsResponse.content[0].text);
+    } catch (parseError) {
+        console.error('JSON parse error:', parseError.message);
+        console.error('Raw response:', statsResponse.content[0].text);
+        const err = new Error('Failed to parse extracted statistics: ' + parseError.message);
+        err.statusCode = 422;
+        throw err;
+    }
+
+    // Server-side team totals computation as safety net
+    stats = computeTeamTotals(stats);
+
+    return stats;
+}
+
+function scorebookLogger(req, res, next) {
+    const startTime = Date.now();
+    const body = req.body || {};
+    const homeSize = body.homeImage ? (Buffer.byteLength(body.homeImage, 'utf8') / 1024).toFixed(1) : null;
+    const opponentSize = body.opponentImage ? (Buffer.byteLength(body.opponentImage, 'utf8') / 1024).toFixed(1) : null;
+    const legacySize = body.image ? (Buffer.byteLength(body.image, 'utf8') / 1024).toFixed(1) : null;
+
+    const sizes = [
+        homeSize && `home=${homeSize}KB`,
+        opponentSize && `opponent=${opponentSize}KB`,
+        legacySize && `image=${legacySize}KB`
+    ].filter(Boolean).join(' ');
+
+    console.log(`[SCOREBOOK] ${new Date().toISOString()} | ${req.method} ${req.path} | ${sizes || 'no images'}`);
+
+    const originalJson = res.json.bind(res);
+    res.json = (resBody) => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        if (resBody && resBody.success) {
+            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=success`);
+        } else {
+            console.log(`[SCOREBOOK] ${new Date().toISOString()} | DONE ${res.statusCode} | time=${elapsed}s | status=failed | error=${resBody?.error || 'unknown'}`);
+        }
+        return originalJson(resBody);
+    };
+
+    next();
+}
+
+// POST /api/analyze-scorebook
+// Accepts either:
+//   { homeImage, opponentImage }  — analyzes both scorebooks
+//   { image, team }               — legacy single-image mode
+app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { homeImage, opponentImage, image, team } = req.body;
+        const isDualMode = homeImage || opponentImage;
+
+        if (!isDualMode && !image) {
+            return res.status(400).json({
                 success: false,
-                error: 'Failed to analyze scorebook image. Claude API error.',
-                details: apiError.message
+                error: 'Missing image data. Provide "homeImage" and/or "opponentImage", or "image" with "team".'
             });
         }
 
-        // Parse the extracted stats using utility function
-        let stats;
-        try {
-            stats = extractJSON(statsResponse.content[0].text);
-        } catch (parseError) {
-            console.error('JSON parse error (stats):', parseError.message);
-            console.error('Raw response:', statsResponse.content[0].text);
-            return res.status(422).json({
-                success: false,
-                error: 'Failed to parse extracted statistics from scorebook image.',
-                details: parseError.message
-            });
+        let homeStats = null;
+        let opponentStats = null;
+        let insights = '';
+
+        if (isDualMode) {
+            // Process both scorebooks in parallel if both provided
+            const jobs = [];
+            if (homeImage) jobs.push(processScorebook(homeImage, 'home').then(s => { homeStats = s; }));
+            if (opponentImage) jobs.push(processScorebook(opponentImage, 'opponent').then(s => { opponentStats = s; }));
+            await Promise.all(jobs);
+        } else {
+            // Legacy single-image mode
+            if (!team || !['home', 'away'].includes(team)) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Missing or invalid "team" field. Must be "home" or "away".'
+                });
+            }
+            const stats = await processScorebook(image, team);
+            if (team === 'home') homeStats = stats;
+            else opponentStats = stats;
         }
 
-        // Step 2: Generate coaching insights based on extracted stats
-        const insightsPrompt = `You are an experienced basketball coach analyzing game statistics for the ${team} team.
+        // Build context for insights generation
+        const statsContext = {};
+        if (homeStats) statsContext.home = homeStats;
+        if (opponentStats) statsContext.opponent = opponentStats;
 
-Here are the extracted stats from the scorebook:
-${JSON.stringify(stats, null, 2)}
+        const insightsPrompt = `You are an experienced basketball coach analyzing game statistics.
+
+Here are the extracted stats from the scorebook(s):
+${JSON.stringify(statsContext, null, 2)}
 
 Based on these statistics, provide detailed coaching insights in markdown format with these exact sections:
 
@@ -2158,18 +2217,16 @@ Provide 4-5 specific drill recommendations that directly address the areas for i
 ## Player Spotlights
 Highlight the top 2-3 performers with specific praise. Reference their individual stats and contribution to the team.
 
+${homeStats && opponentStats ? 'Compare the two teams where relevant and highlight matchup advantages/disadvantages.' : ''}
 Be specific, actionable, and reference the actual numbers from the game stats.`;
 
-        let insightsResponse;
         try {
-            insightsResponse = await anthropic.messages.create({
+            const insightsResponse = await anthropic.messages.create({
                 model: 'claude-sonnet-4-5-20250929',
                 max_tokens: 4096,
-                messages: [{
-                    role: 'user',
-                    content: insightsPrompt
-                }]
+                messages: [{ role: 'user', content: insightsPrompt }]
             });
+            insights = insightsResponse.content[0].text;
         } catch (apiError) {
             console.error('Claude API error (insights):', apiError.message);
             return res.status(502).json({
@@ -2179,12 +2236,14 @@ Be specific, actionable, and reference the actual numbers from the game stats.`;
             });
         }
 
-        const insights = insightsResponse.content[0].text;
         const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
 
         res.json({
             success: true,
-            stats,
+            homeStats,
+            opponentStats,
+            // Legacy compat: also include "stats" pointing to whichever was requested
+            stats: homeStats || opponentStats,
             insights,
             processingTime
         });
@@ -2192,9 +2251,113 @@ Be specific, actionable, and reference the actual numbers from the game stats.`;
     } catch (error) {
         console.error('Scorebook analysis error:', error);
         const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+        const statusCode = error.statusCode || 500;
+        res.status(statusCode).json({
+            success: false,
+            error: error.message || 'Internal server error during scorebook analysis.',
+            processingTime
+        });
+    }
+});
+
+// ===========================================
+// PRACTICE PLAN GENERATION ENDPOINT
+// ===========================================
+
+app.post('/api/generate-practice-plan', scorebookLogger, async (req, res) => {
+    const startTime = Date.now();
+
+    try {
+        const { stats, homeStats, opponentStats, insights, teamName, focusAreas } = req.body;
+
+        // Accept stats from either the dual-mode or legacy format
+        const teamStats = homeStats || stats;
+        if (!teamStats) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing stats data. Provide "homeStats" or "stats" from a previous scorebook analysis.'
+            });
+        }
+
+        const practicePlanPrompt = `You are an elite basketball coach creating a detailed practice plan based on recent game performance.
+
+TEAM: ${teamName || 'Our Team'}
+${focusAreas ? `COACH'S FOCUS AREAS: ${Array.isArray(focusAreas) ? focusAreas.join(', ') : focusAreas}` : ''}
+
+GAME STATS:
+${JSON.stringify(teamStats, null, 2)}
+${opponentStats ? `\nOPPONENT STATS:\n${JSON.stringify(opponentStats, null, 2)}` : ''}
+${insights ? `\nPREVIOUS COACHING INSIGHTS:\n${insights}` : ''}
+
+Create a comprehensive, structured practice plan in markdown format with these sections:
+
+## Practice Plan Overview
+- Duration: 90-120 minutes
+- Focus theme based on the game stats
+- Brief summary of what this practice addresses
+
+## Warm-Up (15 minutes)
+2-3 warm-up activities that relate to the skills being developed
+
+## Skill Development Stations (30 minutes)
+4-5 specific drill stations with:
+- Drill name
+- Duration (minutes)
+- Setup description
+- Key coaching points
+- How it addresses a specific weakness from the game
+
+## Team Concepts (25 minutes)
+2-3 team-oriented drills or plays that address tactical issues seen in the game. Reference specific stats.
+
+## Competitive Drills (20 minutes)
+2-3 game-like competitive drills that reinforce the practice themes
+
+## Cool-Down & Film Review (10 minutes)
+- Cool-down activity
+- 2-3 specific film clips to review from the game (describe what to show)
+- Key takeaways to reinforce
+
+## Individual Player Assignments
+For the top 3-4 players who need specific development based on their stats, provide:
+- Player name/number
+- What they did well
+- What to work on
+- 1-2 individual drills to do before/after practice
+
+Be specific with drill descriptions. Reference actual game stats to justify each drill choice.`;
+
+        let planResponse;
+        try {
+            planResponse = await anthropic.messages.create({
+                model: 'claude-sonnet-4-5-20250929',
+                max_tokens: 8192,
+                messages: [{ role: 'user', content: practicePlanPrompt }]
+            });
+        } catch (apiError) {
+            console.error('Claude API error (practice plan):', apiError.message);
+            return res.status(502).json({
+                success: false,
+                error: 'Failed to generate practice plan. Claude API error.',
+                details: apiError.message
+            });
+        }
+
+        const practicePlan = planResponse.content[0].text;
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
+
+        res.json({
+            success: true,
+            practicePlan,
+            processingTime
+        });
+
+    } catch (error) {
+        console.error('Practice plan generation error:', error);
+        const processingTime = ((Date.now() - startTime) / 1000).toFixed(1) + 's';
         res.status(500).json({
             success: false,
-            error: 'Internal server error during scorebook analysis.',
+            error: 'Internal server error during practice plan generation.',
             details: error.message,
             processingTime
         });
@@ -2220,5 +2383,6 @@ app.listen(PORT, () => {
     console.log('  POST /api/upload/finalize       Finalize upload');
     console.log('  POST /api/upload/simple         Simple upload');
     console.log('  POST /api/analyze-scorebook     Scorebook analysis');
+    console.log('  POST /api/generate-practice-plan Practice plan');
     console.log('===========================================');
 });
