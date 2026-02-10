@@ -1742,9 +1742,33 @@ app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
         }
 
         // Step 1: Extract stats from scorebook image
-        const extractionPrompt = `You are analyzing a basketball scorebook photo for the ${team} team.
+        const extractionPrompt = `You are an expert at reading handwritten basketball scorebooks. You are analyzing a scorebook photo for the ${team} team.
 
-Extract the basketball statistics from this scorebook image and return ONLY valid JSON in this exact format (no markdown, no explanation, just the JSON object):
+CRITICAL: This is a handwritten paper scorebook. Read it very carefully using these guidelines:
+
+HOW TO READ A BASKETBALL SCOREBOOK:
+1. FINAL SCORE & QUARTER SCORES: Look at the TOP of the scorebook for labeled fields like "FIRST Q SCORE", "FIRST HALF SCORE", "THIRD Q SCORE", and "FINAL SCORE". These are usually CUMULATIVE (running totals), so:
+   - Q1 points = "FIRST Q SCORE" value
+   - Q2 points = "FIRST HALF SCORE" minus "FIRST Q SCORE"
+   - Q3 points = "THIRD Q SCORE" minus "FIRST HALF SCORE"
+   - Q4 points = "FINAL SCORE" minus "THIRD Q SCORE"
+   The FINAL SCORE field is the definitive total. Always use it.
+
+2. PLAYER STATS: Each player has a row. Look at the RIGHT side of each row for the SCORING SUMMARY columns:
+   - "FG" or "2's" = two-point field goals made
+   - "3's" = three-point field goals made
+   - "FT A" or "FTA" = free throws attempted
+   - "FT M" or "FTM" = free throws made
+   - "TP" = total points (this is the authoritative point total per player)
+   Use the SCORING SUMMARY columns (right side) as the primary source for stats, NOT the tally marks in the quarter sections which are harder to read.
+
+3. PERSONAL FOULS: Listed in the "PERSONAL FOULS" column, usually as circled numbers (P1, P2, P3, P4, P5).
+
+4. FIELD GOALS: Total field goals made = two-point FGs + three-point FGs. Total field goals attempted must be estimated from the quarter tally marks (made shots shown as filled dots or numbers, missed shots as open circles or dashes). If you cannot determine attempts, estimate from the made shots.
+
+5. VALIDATION: The sum of all players' TP values should equal the FINAL SCORE. If they don't match, trust the FINAL SCORE and re-examine the individual TP values.
+
+Extract the statistics and return ONLY valid JSON in this exact format (no markdown, no explanation, just the JSON object):
 {
   "quarters": {"Q1": <number>, "Q2": <number>, "Q3": <number>, "Q4": <number>},
   "finalScore": <number>,
@@ -1752,26 +1776,28 @@ Extract the basketball statistics from this scorebook image and return ONLY vali
     {
       "number": "<jersey number as string>",
       "name": "<player name>",
-      "points": <number>,
+      "points": <number from TP column>,
       "fieldGoalsMade": <number>,
       "fieldGoalsAttempted": <number>,
       "freeThrowsMade": <number>,
       "freeThrowsAttempted": <number>,
-      "fouls": <number>
+      "fouls": <number of personal fouls>
     }
   ],
   "teamTotals": {
-    "totalPoints": <number>,
-    "fieldGoalPercentage": <number>,
-    "freeThrowPercentage": <number>
+    "totalPoints": <number from FINAL SCORE>,
+    "fieldGoalPercentage": <number as decimal>,
+    "freeThrowPercentage": <number as decimal>
   }
 }
 
 Important:
 - Focus on the ${team} team's data
-- If a value cannot be determined from the scorebook, use 0
+- Use the FINAL SCORE from the top of the scorebook as the definitive total
+- Use TP (total points) column for each player's points
+- If a value cannot be determined, use 0
 - Calculate fieldGoalPercentage and freeThrowPercentage as decimal values (e.g. 0.45 for 45%)
-- Include all players visible in the scorebook
+- Include ALL players listed in the scorebook, even those with 0 points
 - Return ONLY the JSON object, nothing else`;
 
         let statsResponse;
