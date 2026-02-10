@@ -1999,10 +1999,11 @@ app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
             });
         }
 
-        // Compress image if needed (>5MB → ~2MB) and convert HEIC to JPEG
+        // Compress image if too large, but use a high threshold to preserve
+        // handwritten scorebook detail. Claude vision accepts up to 20MB.
         let { base64Data, mediaType } = validation;
         try {
-            const compressed = await compressImage(image, 2);
+            const compressed = await compressImage(image, 10);
             base64Data = compressed.base64Data;
             mediaType = compressed.mediaType;
             if (compressed.compressed) {
@@ -2014,37 +2015,82 @@ app.post('/api/analyze-scorebook', scorebookLogger, async (req, res) => {
         }
 
         // Step 1: Extract stats from scorebook image
-        const extractionPrompt = `You are analyzing a basketball scorebook photo for the ${team} team.
+        const extractionPrompt = `You are an expert at reading handwritten basketball scorebooks. Analyze this scorebook photo for the ${team} team.
 
-Extract the basketball statistics from this scorebook image and return ONLY valid JSON in this exact format (no markdown, no explanation, just the JSON object):
+Follow these steps IN ORDER. Do each step carefully before moving on.
+
+━━━ STEP 1: READ THE HEADER SCORES ━━━
+Look at the TOP-RIGHT area of the scorebook page for these labeled fields:
+  • "FIRST Q SCORE" — this is the cumulative score after Q1
+  • "FIRST HALF SCORE" — cumulative score after Q2
+  • "THIRD Q SCORE" — cumulative score after Q3
+  • "FINAL SCORE" — the definitive game total
+
+These are CUMULATIVE (running totals). Convert to per-quarter scoring:
+  Q1 = FIRST Q SCORE
+  Q2 = FIRST HALF SCORE − FIRST Q SCORE
+  Q3 = THIRD Q SCORE − FIRST HALF SCORE
+  Q4 = FINAL SCORE − THIRD Q SCORE
+
+VALIDATION: Q1 + Q2 + Q3 + Q4 MUST equal FINAL SCORE. If it does not, re-read the header values. All four quarters must have values — a real basketball game has scoring in all quarters. Do NOT return 0 for Q3 or Q4 unless the header explicitly shows the cumulative score did not change.
+
+━━━ STEP 2: READ EACH PLAYER ROW ━━━
+Each player row has columns. Focus on the SCORING SUMMARY columns on the FAR RIGHT of the row:
+  • "FG" or "2's" column = two-point field goals MADE
+  • "3's" column = three-point field goals MADE
+  • "FT A" or "FA" column = free throws ATTEMPTED
+  • "FT M" or "FM" column = free throws MADE
+  • "TP" column = TOTAL POINTS (the rightmost number column — this is authoritative)
+
+For field goals attempted: count made shots + missed shots from the quarter sections if visible. A filled dot ● = made shot, an open circle ○ = missed shot. If attempts are unclear, set fieldGoalsAttempted = fieldGoalsMade (conservative estimate).
+
+For personal fouls: count how many of P1, P2, P3, P4, P5 are marked/crossed out.
+
+Include EVERY player listed, even those with all zeros.
+
+━━━ STEP 3: COMPUTE TEAM TOTALS ━━━
+Using the player data you extracted:
+  totalPoints = FINAL SCORE from the header (this is authoritative)
+  totalFGMade = sum of all players' (two-point FGs + three-point FGs)
+  totalFGAttempted = sum of all players' fieldGoalsAttempted
+  totalFTMade = sum of all players' freeThrowsMade
+  totalFTAttempted = sum of all players' freeThrowsAttempted
+  fieldGoalPercentage = totalFGMade / totalFGAttempted (as decimal, e.g. 0.45)
+  freeThrowPercentage = totalFTMade / totalFTAttempted (as decimal, e.g. 0.80)
+
+If totalFGAttempted is 0, set fieldGoalPercentage to 0.
+If totalFTAttempted is 0, set freeThrowPercentage to 0.
+
+━━━ STEP 4: VALIDATE ━━━
+Before outputting, check:
+  ✓ Q1 + Q2 + Q3 + Q4 = finalScore
+  ✓ Sum of all players' points ≈ finalScore (should match or be very close)
+  ✓ fieldGoalPercentage and freeThrowPercentage are between 0 and 1
+  ✓ No quarter value is 0 unless you are certain from the header
+
+━━━ OUTPUT ━━━
+Return ONLY this JSON (no markdown fences, no explanation):
 {
   "quarters": {"Q1": <number>, "Q2": <number>, "Q3": <number>, "Q4": <number>},
   "finalScore": <number>,
   "players": [
     {
-      "number": "<jersey number as string>",
+      "number": "<jersey number>",
       "name": "<player name>",
-      "points": <number>,
-      "fieldGoalsMade": <number>,
-      "fieldGoalsAttempted": <number>,
-      "freeThrowsMade": <number>,
-      "freeThrowsAttempted": <number>,
-      "fouls": <number>
+      "points": <from TP column>,
+      "fieldGoalsMade": <2pt FGs + 3pt FGs>,
+      "fieldGoalsAttempted": <total FG attempts>,
+      "freeThrowsMade": <FT made>,
+      "freeThrowsAttempted": <FT attempted>,
+      "fouls": <personal foul count>
     }
   ],
   "teamTotals": {
-    "totalPoints": <number>,
-    "fieldGoalPercentage": <number>,
-    "freeThrowPercentage": <number>
+    "totalPoints": <FINAL SCORE from header>,
+    "fieldGoalPercentage": <decimal 0-1>,
+    "freeThrowPercentage": <decimal 0-1>
   }
-}
-
-Important:
-- Focus on the ${team} team's data
-- If a value cannot be determined from the scorebook, use 0
-- Calculate fieldGoalPercentage and freeThrowPercentage as decimal values (e.g. 0.45 for 45%)
-- Include all players visible in the scorebook
-- Return ONLY the JSON object, nothing else`;
+}`;
 
         let statsResponse;
         try {
