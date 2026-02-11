@@ -24,19 +24,75 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const PORT = process.env.PORT || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL || '*';
 
-if (!process.env.ANTHROPIC_API_KEY) {
-    console.error('===========================================');
-    console.error('FATAL: ANTHROPIC_API_KEY is not set.');
-    console.error('');
-    console.error('The server cannot start without this key.');
-    console.error('');
-    console.error('To fix this:');
-    console.error('  Local:   export ANTHROPIC_API_KEY=your-key-here');
-    console.error('  Railway: Add ANTHROPIC_API_KEY in your service Variables tab');
-    console.error('           (Settings → Variables → New Variable)');
-    console.error('===========================================');
-    process.exit(1);
-}
+(function validateEnvironment() {
+    const errors = [];
+
+    // --- Required variables ---
+    const required = [
+        'ANTHROPIC_API_KEY',
+        'JWT_SECRET',
+        'STRIPE_SECRET_KEY',
+        'STRIPE_PUBLISHABLE_KEY',
+        'STRIPE_WEBHOOK_SECRET',
+    ];
+
+    const present = {};
+    for (const key of required) {
+        present[key] = !!process.env[key];
+        if (!process.env[key]) {
+            errors.push(`${key} is not set`);
+        }
+    }
+
+    // --- Format validation (only when the variable is present) ---
+    if (process.env.STRIPE_SECRET_KEY &&
+        !/^sk_(test|live)_/.test(process.env.STRIPE_SECRET_KEY)) {
+        errors.push('STRIPE_SECRET_KEY must start with sk_test_ or sk_live_');
+    }
+
+    if (process.env.STRIPE_PUBLISHABLE_KEY &&
+        !/^pk_(test|live)_/.test(process.env.STRIPE_PUBLISHABLE_KEY)) {
+        errors.push('STRIPE_PUBLISHABLE_KEY must start with pk_test_ or pk_live_');
+    }
+
+    if (process.env.STRIPE_WEBHOOK_SECRET &&
+        !/^whsec_/.test(process.env.STRIPE_WEBHOOK_SECRET)) {
+        errors.push('STRIPE_WEBHOOK_SECRET must start with whsec_');
+    }
+
+    if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+        errors.push('JWT_SECRET must be at least 32 characters');
+    }
+
+    // --- Log status ---
+    console.log('===========================================');
+    console.log('Environment variable check:');
+    for (const key of required) {
+        const status = present[key] ? 'SET' : 'MISSING';
+        console.log(`  ${key}: ${status}`);
+    }
+    // Optional variables worth noting
+    const optional = ['RESEND_API_KEY', 'GOOGLE_CLOUD_PROJECT_ID'];
+    for (const key of optional) {
+        if (process.env[key]) console.log(`  ${key}: SET`);
+    }
+    console.log('===========================================');
+
+    // --- Abort on errors ---
+    if (errors.length > 0) {
+        console.error('');
+        console.error('FATAL: Environment validation failed:');
+        for (const msg of errors) {
+            console.error(`  - ${msg}`);
+        }
+        console.error('');
+        console.error('To fix this:');
+        console.error('  Local:   export VARIABLE_NAME=value');
+        console.error('  Railway: Add variables in Settings → Variables → New Variable');
+        console.error('===========================================');
+        process.exit(1);
+    }
+})();
 
 const app = express();
 
