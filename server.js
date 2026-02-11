@@ -34,6 +34,8 @@ const FRONTEND_URL = process.env.FRONTEND_URL || '*';
         'STRIPE_SECRET_KEY',
         'STRIPE_PUBLISHABLE_KEY',
         'STRIPE_WEBHOOK_SECRET',
+        'SUPABASE_URL',
+        'SUPABASE_SERVICE_KEY',
     ];
 
     const present = {};
@@ -62,6 +64,11 @@ const FRONTEND_URL = process.env.FRONTEND_URL || '*';
 
     if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
         errors.push('JWT_SECRET must be at least 32 characters');
+    }
+
+    if (process.env.SUPABASE_URL &&
+        !/^https:\/\/.+\.supabase\.co/.test(process.env.SUPABASE_URL)) {
+        errors.push('SUPABASE_URL must be a valid Supabase project URL (https://<ref>.supabase.co)');
     }
 
     // --- Log status ---
