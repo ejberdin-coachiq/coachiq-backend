@@ -11,6 +11,8 @@ const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const { Resend } = require('resend');
 const { validateImage, compressImage, extractJSON } = require('./utils/imageProcessing');
+const { processDocumentAI, SUPPORTED_MIME_TYPES: OCR_MIME_TYPES, MAX_FILE_SIZE: OCR_MAX_FILE_SIZE } = require('./services/documentai');
+const { parseScorebook } = require('./services/scorebookParser');
 
 // ===========================================
 // ENVIRONMENT VALIDATION
@@ -1362,7 +1364,7 @@ app.get('/', (req, res) => {
     res.json({ 
         status: 'CoachIQ API running', 
         version: '6.0.0-comprehensive',
-        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis', 'scorebook-analysis']
+        features: ['all-skill-levels', 'complete-scheme-recognition', 'pro-analysis', 'scorebook-analysis', 'document-ai-ocr']
     });
 });
 
@@ -2155,6 +2157,147 @@ Be specific, actionable, and reference the actual numbers from the game stats.`;
     }
 });
 
+// ===========================================
+// DOCUMENT AI OCR ENDPOINTS
+// ===========================================
+
+// Separate multer instance for OCR – memory storage (no disk temp files),
+// size limited to the configured max (default 20 MB).
+const ocrUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: OCR_MAX_FILE_SIZE },
+});
+
+/**
+ * POST /api/ocr/scorebook
+ * Accept multipart/form-data with field "file" (image or PDF).
+ * Returns normalised OCR JSON: { text, pages[] }.
+ */
+app.post('/api/ocr/scorebook', (req, res, next) => {
+    ocrUpload.single('file')(req, res, (err) => {
+        if (err) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({
+                    error: `File too large. Maximum size: ${OCR_MAX_FILE_SIZE / 1024 / 1024} MB.`,
+                });
+            }
+            return res.status(400).json({ error: err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
+    const requestId = uuidv4().slice(0, 8);
+    const startTime = Date.now();
+
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Missing file. Send multipart/form-data with field name "file".' });
+        }
+
+        const { mimetype, buffer, size } = req.file;
+
+        console.log(`[OCR ${requestId}] Received ${mimetype} (${(size / 1024).toFixed(1)} KB)`);
+
+        if (!OCR_MIME_TYPES.has(mimetype)) {
+            return res.status(400).json({
+                error: `Unsupported file type: ${mimetype}. Supported: ${[...OCR_MIME_TYPES].join(', ')}`,
+            });
+        }
+
+        const result = await processDocumentAI(buffer, mimetype);
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`[OCR ${requestId}] Done in ${elapsed}s – ${result.text.length} chars, ${result.pages.length} page(s)`);
+
+        res.json({
+            success: true,
+            requestId,
+            processingTime: `${elapsed}s`,
+            ...result,
+        });
+    } catch (error) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        const status = error.statusCode || 500;
+        console.error(`[OCR ${requestId}] Error (${elapsed}s):`, error.message);
+
+        res.status(status).json({
+            success: false,
+            requestId,
+            error: status === 500
+                ? 'Internal server error during OCR processing.'
+                : error.message,
+        });
+    }
+});
+
+/**
+ * POST /api/ocr/scorebook/parse
+ * Same as /api/ocr/scorebook but also runs the heuristic scorebook parser
+ * to extract player stats, team totals, etc.
+ */
+app.post('/api/ocr/scorebook/parse', (req, res, next) => {
+    ocrUpload.single('file')(req, res, (err) => {
+        if (err) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({
+                    error: `File too large. Maximum size: ${OCR_MAX_FILE_SIZE / 1024 / 1024} MB.`,
+                });
+            }
+            return res.status(400).json({ error: err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
+    const requestId = uuidv4().slice(0, 8);
+    const startTime = Date.now();
+
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'Missing file. Send multipart/form-data with field name "file".' });
+        }
+
+        const { mimetype, buffer, size } = req.file;
+
+        console.log(`[OCR-PARSE ${requestId}] Received ${mimetype} (${(size / 1024).toFixed(1)} KB)`);
+
+        if (!OCR_MIME_TYPES.has(mimetype)) {
+            return res.status(400).json({
+                error: `Unsupported file type: ${mimetype}. Supported: ${[...OCR_MIME_TYPES].join(', ')}`,
+            });
+        }
+
+        const ocrResult = await processDocumentAI(buffer, mimetype);
+        const parsed = parseScorebook(ocrResult.text);
+
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`[OCR-PARSE ${requestId}] Done in ${elapsed}s – ${parsed.players.length} players detected`);
+
+        res.json({
+            success: true,
+            requestId,
+            processingTime: `${elapsed}s`,
+            ocr: ocrResult,
+            parsed: {
+                players: parsed.players,
+                teamTotals: parsed.teamTotals,
+            },
+            warnings: parsed.warnings,
+        });
+    } catch (error) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        const status = error.statusCode || 500;
+        console.error(`[OCR-PARSE ${requestId}] Error (${elapsed}s):`, error.message);
+
+        res.status(status).json({
+            success: false,
+            requestId,
+            error: status === 500
+                ? 'Internal server error during OCR processing.'
+                : error.message,
+        });
+    }
+});
+
 app.listen(PORT, () => {
     console.log('===========================================');
     console.log(`CoachIQ v6.0 COMPREHENSIVE`);
@@ -2174,5 +2317,7 @@ app.listen(PORT, () => {
     console.log('  POST /api/upload/finalize       Finalize upload');
     console.log('  POST /api/upload/simple         Simple upload');
     console.log('  POST /api/analyze-scorebook     Scorebook analysis');
+    console.log('  POST /api/ocr/scorebook         Document AI OCR');
+    console.log('  POST /api/ocr/scorebook/parse   OCR + stat parsing');
     console.log('===========================================');
 });
