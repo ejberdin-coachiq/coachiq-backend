@@ -5,10 +5,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "ocr:test": "node scripts/ocr_test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
+    "@google-cloud/documentai": "^9.5.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^4.18.2",
