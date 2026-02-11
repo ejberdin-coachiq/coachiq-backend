@@ -12,10 +12,12 @@ Extracts roster and per-player scoring totals from a single Mark 5 Basketball Sc
 |---|---|
 | `player_name` | Player name from roster column |
 | `player_number` | Jersey number (if present) |
-| `personal_fouls_total` | Written foul total (does **not** attempt to count checkbox marks) |
-| `shooting.fg2_made / fg2_att` | 2-point field goals made / attempted |
-| `shooting.fg3_made / fg3_att` | 3-point field goals made / attempted |
-| `shooting.ft_made / ft_att` | Free throws made / attempted |
+| `personal_fouls_total` | Count of crossed-out P1–P5 slots (X marks, merged marks, or confidence-based detection) |
+| `shooting.fg2_made` | 2-point field goals made (from "2's" column) |
+| `shooting.fg3_made` | 3-point field goals made (from "3's" column) |
+| `shooting.ft_att` | Free throw attempts (from "A" column) |
+| `shooting.ft_made` | Free throws made (from "M" column) |
+| `shooting.fg2_att / fg3_att` | Always `null` — not present in Mark 5 scoring summary |
 | `total_points` | Total points for the player |
 | `team_totals` | Same shooting + total_points aggregated for the team |
 
