@@ -97,6 +97,33 @@ function detectImageType(buffer) {
 }
 
 /**
+ * Normalizes image orientation using EXIF data and ensures the image
+ * is right-side-up for accurate scorebook reading.
+ * sharp.rotate() with no args auto-rotates based on EXIF orientation tag.
+ * Returns { base64Data, mediaType, rotated }.
+ */
+async function normalizeOrientation(base64String) {
+    const cleanBase64 = base64String.replace(DATA_URI_REGEX, '').replace(/\s/g, '');
+    const buffer = Buffer.from(cleanBase64, 'base64');
+
+    const metadata = await sharp(buffer).metadata();
+    // EXIF orientation: 1 = normal, anything else means the image needs rotation
+    const needsRotation = metadata.orientation && metadata.orientation !== 1;
+
+    // Always run rotate() to apply EXIF orientation, then output as JPEG
+    const outputBuffer = await sharp(buffer)
+        .rotate() // auto-rotate based on EXIF
+        .jpeg({ quality: 95 })
+        .toBuffer();
+
+    return {
+        base64Data: outputBuffer.toString('base64'),
+        mediaType: 'image/jpeg',
+        rotated: needsRotation
+    };
+}
+
+/**
  * Compresses a base64 image if it exceeds maxSizeMB.
  * Converts HEIC to JPEG. Maintains aspect ratio.
  * Returns { base64Data, mediaType, compressed, originalSizeMB, finalSizeMB }.
@@ -233,4 +260,45 @@ function extractJSON(claudeResponseText) {
     throw new Error(`Could not extract valid JSON from response. Preview: "${preview}"`);
 }
 
-module.exports = { validateImage, compressImage, extractJSON };
+/**
+ * Server-side computation of team totals from player data.
+ * Ensures teamTotals always has valid percentages even if Claude returns 0s.
+ */
+function computeTeamTotals(stats) {
+    if (!stats || !stats.players || !Array.isArray(stats.players)) return stats;
+
+    let totalFGMade = 0;
+    let totalFGAttempted = 0;
+    let totalFTMade = 0;
+    let totalFTAttempted = 0;
+    let totalPoints = 0;
+
+    for (const player of stats.players) {
+        totalFGMade += player.fieldGoalsMade || 0;
+        totalFGAttempted += player.fieldGoalsAttempted || 0;
+        totalFTMade += player.freeThrowsMade || 0;
+        totalFTAttempted += player.freeThrowsAttempted || 0;
+        totalPoints += player.points || 0;
+    }
+
+    // Use the finalScore from the header as authoritative if available
+    const authoritative = stats.finalScore || totalPoints;
+
+    stats.teamTotals = {
+        totalPoints: authoritative,
+        totalFieldGoalsMade: totalFGMade,
+        totalFieldGoalsAttempted: totalFGAttempted,
+        totalFreeThrowsMade: totalFTMade,
+        totalFreeThrowsAttempted: totalFTAttempted,
+        fieldGoalPercentage: totalFGAttempted > 0
+            ? parseFloat((totalFGMade / totalFGAttempted).toFixed(3))
+            : 0,
+        freeThrowPercentage: totalFTAttempted > 0
+            ? parseFloat((totalFTMade / totalFTAttempted).toFixed(3))
+            : 0
+    };
+
+    return stats;
+}
+
+module.exports = { validateImage, compressImage, extractJSON, normalizeOrientation, computeTeamTotals };
