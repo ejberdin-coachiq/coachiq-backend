@@ -13,6 +13,8 @@ const { Resend } = require('resend');
 const { validateImage, compressImage, extractJSON, normalizeOrientation, computeTeamTotals } = require('./utils/imageProcessing');
 const { processDocumentAI, SUPPORTED_MIME_TYPES: OCR_MIME_TYPES, MAX_FILE_SIZE: OCR_MAX_FILE_SIZE } = require('./services/documentai');
 const { parseScorebook } = require('./services/scorebookParser');
+const authRoutes = require('./routes/auth');
+const authMiddleware = require('./middleware/auth');
 
 // ===========================================
 // ENVIRONMENT VALIDATION
@@ -45,6 +47,9 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '100mb' }));
+
+// Auth routes
+app.use('/api/auth', authRoutes);
 
 // Configure multer
 const storage = multer.diskStorage({
@@ -2517,6 +2522,8 @@ app.listen(PORT, () => {
     console.log('API Endpoints:');
     console.log('  GET  /                          Status');
     console.log('  GET  /health                    Health check');
+    console.log('  POST /api/auth/signup           Sign up');
+    console.log('  POST /api/auth/login            Log in');
     console.log('  POST /api/users/register        Register user');
     console.log('  GET  /api/users/:email          Get user');
     console.log('  GET  /api/users/:email/reports  Get user reports');
